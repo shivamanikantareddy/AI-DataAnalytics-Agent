@@ -1,8 +1,9 @@
+from utils.state import AgentState
 import featuretools as ft
 # import io
 # import json
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Annotated, Union
 import matplotlib
 matplotlib.use("Agg")
 # import matplotlib.pyplot as plt
@@ -19,6 +20,7 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
 
 warnings.filterwarnings("ignore")
 
@@ -41,7 +43,7 @@ warnings.filterwarnings("ignore")
 
 @tool
 def handle_missing_values(
-    df: pd.DataFrame,
+    state: Annotated[ AgentState, InjectedState],
     strategy: str = "mean",
     columns: Optional[List[str]] = None,
     fill_value: Optional[Any] = None,
@@ -52,7 +54,7 @@ def handle_missing_values(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    
     strategy : str
         One of 'mean', 'median', 'mode', 'ffill', 'bfill',
         'drop_rows', 'drop_cols', 'constant'.
@@ -67,6 +69,7 @@ def handle_missing_values(
     -------
     Dict with cleaned DataFrame and imputation metadata.
     """
+    df= state["clean_df"]
     result_df = df.copy()
     target_cols = columns if columns else df.columns.tolist()
     imputation_log: Dict[str, Any] = {}
@@ -131,7 +134,7 @@ def handle_missing_values(
         imputation_log["dropped_columns"] = dropped
 
     return {
-        "dataframe": result_df,
+        "clean_df": result_df,
         "imputation_log": imputation_log,
         "remaining_missing": int(result_df.isnull().sum().sum()),
     }
@@ -143,7 +146,7 @@ def handle_missing_values(
 
 @tool
 def detect_and_remove_duplicates(
-    df: pd.DataFrame,
+    state: Annotated[ AgentState, InjectedState],
     subset: Optional[List[str]] = None,
     keep: str = "first",
     remove: bool = True,
@@ -153,7 +156,7 @@ def detect_and_remove_duplicates(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    
     subset : list of str, optional
         Columns to consider for duplicate detection.
     keep : str
@@ -165,6 +168,7 @@ def detect_and_remove_duplicates(
     -------
     Dict with cleaned DataFrame and duplicate statistics.
     """
+    df= state["clean_df"]
     dup_mask = df.duplicated(subset=subset, keep=False)
     n_duplicates = int(df.duplicated(subset=subset, keep=keep).sum())
 
@@ -173,7 +177,7 @@ def detect_and_remove_duplicates(
     result_df = df.drop_duplicates(subset=subset, keep=keep).reset_index(drop=True) if remove else df.copy()
 
     return {
-        "dataframe": result_df,
+        "clean_df": result_df,
         "statistics": {
             "original_row_count": len(df),
             "duplicate_row_count": n_duplicates,
@@ -191,7 +195,7 @@ def detect_and_remove_duplicates(
 
 @tool
 def detect_outliers(
-    df: pd.DataFrame,
+    state: Annotated[ AgentState, InjectedState],
     method: str = "iqr",
     columns: Optional[List[str]] = None,
     action: str = "flag",
@@ -204,7 +208,7 @@ def detect_outliers(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    
     method : str
         'iqr', 'zscore', or 'isolation_forest'.
     columns : list of str, optional
@@ -222,6 +226,7 @@ def detect_outliers(
     -------
     Dict with processed DataFrame, outlier indices, and per-column counts.
     """
+    df= state["clean_df"]
     result_df = df.copy()
     num_cols = columns or df.select_dtypes(include=[np.number]).columns.tolist()
     outlier_counts: Dict[str, int] = {}
@@ -276,7 +281,7 @@ def detect_outliers(
         result_df = result_df.drop(index=list(outlier_indices)).reset_index(drop=True)
 
     return {
-        "dataframe": result_df,
+        "clean_df": result_df,
         "outlier_counts_per_column": outlier_counts,
         "total_outlier_rows": len(outlier_indices),
         "method": method,
@@ -290,7 +295,7 @@ def detect_outliers(
 
 @tool
 def correct_data_types(
-    df: pd.DataFrame,
+    state: Annotated[ AgentState, InjectedState],
     numeric_cols: Optional[List[str]] = None,
     date_cols: Optional[List[str]] = None,
     categorical_cols: Optional[List[str]] = None,
@@ -302,7 +307,7 @@ def correct_data_types(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    
     numeric_cols : list of str, optional
     date_cols : list of str, optional
     categorical_cols : list of str, optional
@@ -315,6 +320,7 @@ def correct_data_types(
     -------
     Dict with corrected DataFrame and conversion log.
     """
+    df= state["clean_df"]
     result_df = df.copy()
     conversion_log: Dict[str, Dict[str, str]] = {}
     errors: Dict[str, str] = {}
@@ -391,7 +397,7 @@ def correct_data_types(
                 type_issues.append(col)
 
     return {
-        "dataframe": result_df,
+        "clean_df": result_df,
         "conversion_log": conversion_log,
         "errors": errors,
         "potential_type_issues": type_issues,
@@ -404,7 +410,7 @@ def correct_data_types(
 
 @tool
 def standardize_data(
-    df: pd.DataFrame,
+    state: Annotated[ AgentState, InjectedState],
     text_cols: Optional[List[str]] = None,
     categorical_cols: Optional[List[str]] = None,
     fuzzy_map: Optional[Dict[str, List[str]]] = None,
@@ -415,7 +421,7 @@ def standardize_data(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    
     text_cols : list of str, optional
         Columns to normalize (lowercase, strip whitespace).
     categorical_cols : list of str, optional
@@ -430,6 +436,7 @@ def standardize_data(
     -------
     Dict with standardized DataFrame and change log.
     """
+    df= state["clean_df"]
     result_df = df.copy()
     change_log: Dict[str, Any] = {}
 
@@ -477,7 +484,7 @@ def standardize_data(
                 "cells_changed": len(replacements),
             }
 
-    return {"dataframe": result_df, "change_log": change_log}
+    return {"clean_df": result_df, "change_log": change_log}
 
 
 # ─────────────────────────────────────────────
@@ -486,7 +493,7 @@ def standardize_data(
 
 
 # def transform_features(
-#     df: pd.DataFrame,
+#     state: Annotated[ AgentState, InjectedState],
 #     method: str = "standard_scaler",
 #     columns: Optional[List[str]] = None,
 #     log_shift: float = 1.0,
@@ -497,7 +504,7 @@ def standardize_data(
 
 #     Parameters
 #     ----------
-#     df : pd.DataFrame
+#     
 #     method : str
 #         One of 'standard_scaler', 'minmax_scaler', 'log', 'onehot', 'label_encoder'.
 #     columns : list of str, optional
@@ -685,7 +692,7 @@ def list_featuretools_primitives(primitive_type: str = "transform") -> Dict[str,
 
 @tool
 def transform_features(
-    df: pd.DataFrame,
+    state: Annotated[ AgentState, InjectedState],
     method: str = "standard_scaler",
     columns: Optional[List[str]] = None,
     log_shift: float = 1.0,
@@ -704,7 +711,7 @@ def transform_features(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    
         Input DataFrame to transform.
     method : str
         Transformation method. One of:
@@ -746,6 +753,7 @@ def transform_features(
         'new_features_count'  — Number of features generated (Featuretools only).
         'feature_defs'        — Featuretools feature definitions (DFS only).
     """
+    df= state["clean_df"]
     result_df = df.copy()
     transformers: Dict[str, Any] = {}
     feature_defs: List[Any] = []
@@ -818,7 +826,7 @@ def transform_features(
         )
 
     return {
-        "dataframe": result_df,
+        "clean_df": result_df,
         "method": method,
         "transformed_columns": columns,
         "transformers": transformers,
@@ -835,7 +843,7 @@ def transform_features(
 # ─────────────────────────────────────────────
 
 # def validate_data(
-#     df: pd.DataFrame,
+#     state: Annotated[ AgentState, InjectedState],
 #     schema_dict: Optional[Dict[str, Any]] = None,
 #     range_checks: Optional[Dict[str, Tuple[Optional[float], Optional[float]]]] = None,
 #     type_checks: Optional[Dict[str, str]] = None,
@@ -846,7 +854,7 @@ def transform_features(
 
 #     Parameters
 #     ----------
-#     df : pd.DataFrame
+#     
 #     schema_dict : dict, optional
 #         Pandera-compatible column schema: {col: {'dtype': ..., 'nullable': bool, ...}}.
 #     range_checks : dict, optional
@@ -969,7 +977,7 @@ def transform_features(
 
 #     Parameters
 #     ----------
-#     df : pd.DataFrame
+#     
 #     plot_type : str
 #         'missing_heatmap', 'boxplot', 'histogram', 'correlation_heatmap'.
 #     columns : list of str, optional
@@ -1054,8 +1062,7 @@ def transform_features(
 
 @tool
 def generate_cleaning_report(
-    original_df: pd.DataFrame,
-    cleaned_df: pd.DataFrame,
+    state: Annotated[ AgentState, InjectedState],
     operations_log: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
@@ -1063,8 +1070,7 @@ def generate_cleaning_report(
 
     Parameters
     ----------
-    original_df : pd.DataFrame
-    cleaned_df : pd.DataFrame
+
     operations_log : list of dict, optional
         Log of operations performed (from tool outputs).
 
@@ -1072,6 +1078,8 @@ def generate_cleaning_report(
     -------
     Dict with comprehensive cleaning report.
     """
+    original_df = state["df"]
+    cleaned_df = state['clean_df']
     report: Dict[str, Any] = {}
 
     report["shape_comparison"] = {
@@ -1146,7 +1154,7 @@ def generate_cleaning_report(
 
 
 # def save_dataframe(
-#     df: pd.DataFrame,
+#     state: Annotated[ AgentState, InjectedState],
 #     output_path: str,
 #     file_type: Optional[str] = None,
 #     index: bool = False,
@@ -1158,7 +1166,7 @@ def generate_cleaning_report(
 
 #     Parameters
 #     ----------
-#     df : pd.DataFrame
+#     
 #     output_path : str
 #     file_type : str, optional
 #         'csv', 'excel', 'json'. Auto-detected from extension if None.

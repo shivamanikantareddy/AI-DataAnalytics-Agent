@@ -1042,7 +1042,7 @@ def perform_eda( state : AgentState ) -> AgentState:
     >>> print(eda_results["dataset_summary"])
     >>> print(eda_results["visualization_recommendations"][0])
     """
-    df=state["df"]
+    df=state["clean_df"]
     
     logger.info("=" * 70)
     logger.info("Enterprise EDA pipeline starting...")
@@ -1118,7 +1118,7 @@ def perform_eda( state : AgentState ) -> AgentState:
     }
 
     logger.info(
-        "EDA pipeline complete. %d sections, %d viz recommendations.",
+        "EDA pipeline complete. %d sections generated.",
         len(eda_result),
         # len(viz_recs),
     )

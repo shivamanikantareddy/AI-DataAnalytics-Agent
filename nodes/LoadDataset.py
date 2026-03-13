@@ -46,7 +46,7 @@ def Load_file( state : AgentState ) -> AgentState:
     
     print(df.shape)
 
-    return {'df': df}
+    return {'df': df , 'clean_df': df}
     
 
 
