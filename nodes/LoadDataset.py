@@ -3,15 +3,6 @@ from utils.state import AgentState
 import pandas as pd
 import os
 
-
-
-# def load_file(
-#     file_path: str,
-#     file_type: Optional[str] = None,
-#     sheet_name: Union[str, int, None] = 0,
-#     encoding: str = "utf-8",
-#     **kwargs: Any,
-# ) -> Dict[str, Any]:
     
     
 def Load_file( state : AgentState ) -> AgentState:
@@ -48,13 +39,3 @@ def Load_file( state : AgentState ) -> AgentState:
 
     return {'df': df , 'clean_df': df}
     
-
-
-    # "metadata": {
-    #             "file_path": file_path,
-    #             "file_type": file_type,
-    #             "rows": len(df),
-    #             "columns": len(df.columns),
-    #             "column_names": df.columns.tolist(),
-    #             "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
-    #         },

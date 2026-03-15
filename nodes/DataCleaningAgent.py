@@ -1,79 +1,110 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from utils.state import AgentState
-from eda_tools.data_cleaning_tools import handle_missing_values,detect_and_remove_duplicates,detect_outliers,correct_data_types,standardize_data,transform_features,generate_cleaning_report
+from langgraph.prebuilt import ToolNode, tools_condition
+from tools.data_cleaning_tools import handle_missing_values,detect_and_remove_duplicates,detect_outliers,fix_dtypes,standardize_data,transform_features
 
-model=ChatGoogleGenerativeAI(model="gemini-2.5-flash")
-tools=[ handle_missing_values,detect_and_remove_duplicates,detect_outliers,correct_data_types,standardize_data,transform_features,generate_cleaning_report]
+model=ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview")
+tools=[ handle_missing_values,detect_and_remove_duplicates,detect_outliers,fix_dtypes,standardize_data,transform_features]
+
+cleaning_tools_node = ToolNode(tools=tools)
 
 def Clean_data(state:AgentState)->AgentState:
 
-    report = state['report']
+    # report = state['report']
+    # used_tools = state['used_tools']
+    tools_priority_list_1 = state['tool_priority_list_1']
 
     llm_with_tools=model.bind_tools(tools)
 
     prompt = f"""
 
-    You are an **Autonomous Data Cleaning Agent** that is part of a **Data Analytics Agent System**.
+    You are a Data Cleaning Agent in a Data Analytics system.
 
-    Your task is to **analyze a detailed data profiling report of a dataframe and perform appropriate data cleaning operations using the tools available to you.**
+    Your responsibility is to execute data cleaning tools in the correct order based on a provided execution list.
 
-    The input you receive will be a **data profiling report** describing the dataset, including information such as:
+    INPUT FORMAT:
+    You will receive a list of dictionaries. Each dictionary has the following structure:
 
-    - column names and data types  
-    - missing value statistics  
-    - duplicate records  
-    - outlier detection results  
-    - categorical inconsistencies  
-    - distribution summaries  
-    - other data quality issues  
+    [
+    {{
+        "tool_name": {{
+            "param1": value1,
+            "param2": value2
+        }}
+    }},
+    {{
+        "another_tool": {{
+            "paramA": valueA
+        }}
+    }}
+    ]
 
-    You must **interpret this report and decide which cleaning actions are necessary.**
+    IMPORTANT RULES:
 
-    There is **no fixed sequence of steps**. Your decisions should be **based entirely on the issues identified in the profiling report.**
+    1. The list represents a sequence of tools to be executed in PRIORITY ORDER.
+    2. The FIRST element in the list is always the NEXT tool that must be executed.
+    3. Each dictionary contains:
+    - The KEY → name of the tool to call
+    - The VALUE → dictionary containing the tool's input parameters.
 
-    ---
+    YOUR TASK:
 
-    ## Available Tools
+    1. Always select the FIRST dictionary from the list.
+    2. Extract:
+    - the tool name (key)
+    - the tool parameters (value dictionary)
+    3. Call the corresponding tool using the extracted parameters.
+    4. After the tool is executed, remove that dictionary from the list.
+    5. Repeat the process with the updated list.
 
-    You have access to tools that can perform cleaning operations on the dataframe, including:
+    STOP CONDITION:
 
-    - `handle_missing_values`
-    - `detect_and_remove_duplicates`
-    - `detect_outliers`
-    - `correct_data_types`
-    - `standardize_data`
-    - `transform_features`
-    - `generate_cleaning_report`
+    If the list becomes empty, STOP execution and return:
 
-    You must **use these tools to perform cleaning operations rather than describing the actions manually.**
+    "All data cleaning tools have been executed successfully."
 
-    ---
+    IMPORTANT CONSTRAINTS:
 
-    ## Responsibilities
+    - Never skip tools.
+    - Never change the execution order.
+    - Only execute ONE tool at a time.
+    - Always execute the tool at index 0 of the list.
+    - Do not attempt to infer or modify tool parameters.
+    - Do not fabricate new tools.
 
-    1. **Analyze the profiling report** and identify data quality problems.
-    2. **Decide which cleaning tools to use** and choose appropriate parameters.
-    3. **Execute tools only when necessary** and avoid redundant operations.
-    4. **Maintain an operations log** describing the cleaning steps performed.
-    5. After cleaning is complete, call **`generate_cleaning_report`** to produce a structured summary comparing the original and cleaned data.
+    OUTPUT BEHAVIOR:
 
-    ---
+    If the list is not empty:
+    → Call the tool from the first dictionary.
 
-    ## Guidelines
-
-    - Perform **only necessary cleaning operations**.
-    - Prefer **data preservation over unnecessary deletion**.
-    - Apply **standard data science best practices**.
-    - If the dataset appears clean, **skip cleaning and generate the report directly**.
-
-    ---
-
-    Your goal is to **produce a clean, well-structured dataset and a clear summary of all cleaning actions performed.**
+    If the list is empty:
+    → Return a completion message and stop further tool calls.
     
-    Data_Profiling_Report : {report}
+    here is the priority list of tools you should follow when executing the cleaning process:
+    
+    ToolPriorityList: {tools_priority_list_1}
 
     """
     
-    llm_with_tools.invoke(prompt)
+    response=llm_with_tools.invoke(prompt)
     
+    return {'messages': [response]}
+    
+    
+    
+    
+def pop_executed_node_a(state : AgentState) -> AgentState:
+    
+    current_list = state['tool_priority_list_1']
+    return {'tool_priority_list_1': current_list[1:]}
+
+def pop_executed_node_b(state : AgentState) -> AgentState:
+    
+    current_list = state['tool_priority_list_2']
+    return {'tool_priority_list_2': current_list[1:]}
+
+def pop_executed_node_c(state : AgentState) -> AgentState:
+    
+    current_list = state['tool_priority_list_3']
+    return {'tool_priority_list_3': current_list[1:]}
     

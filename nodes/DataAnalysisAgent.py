@@ -1,93 +1,93 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.prebuilt import ToolNode
 from utils.state import AgentState
-from eda_tools.data_analysis_tools import characterize_distributions,detect_variance_anomalies,compute_correlation_matrix,detect_nonlinear_relationships,compute_feature_importance,compute_variance_contribution,detect_statistical_outliers,detect_rare_categories,detect_metric_spikes,cluster_companies,segment_by_quantile,detect_time_trends,detect_seasonality_hints,analyze_categorical_dominance,compute_categorical_numeric_relationships
+from tools.data_analysis_tools import characterize_distributions,detect_variance_anomalies,compute_correlation_matrix,detect_nonlinear_relationships,compute_feature_importance,compute_variance_contribution,detect_statistical_outliers,detect_rare_categories,detect_metric_spikes,cluster_companies,segment_by_quantile,detect_time_trends,detect_seasonality_hints,analyze_categorical_dominance,compute_categorical_numeric_relationships
 
-model=ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+model=ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview")
 
 tools=[ characterize_distributions,detect_variance_anomalies,compute_correlation_matrix,detect_nonlinear_relationships,compute_feature_importance,compute_variance_contribution,detect_statistical_outliers,detect_rare_categories,detect_metric_spikes,cluster_companies,segment_by_quantile,detect_time_trends,detect_seasonality_hints,analyze_categorical_dominance,compute_categorical_numeric_relationships]
 
+analysis_tools_node = ToolNode(tools=tools)
+
 def Data_analysis(state:AgentState)->AgentState:
 
-    eda_result = state['eda_result']
+    # eda_result = state['eda_result']
+    # eda_summary = state['eda_summary']
+    tools_priority_list = state["tool_priority_list_2"]
 
     llm_with_tools=model.bind_tools(tools)
 
     prompt = f"""
-    You are an expert Data Analysis Agent responsible for extracting deeper insights from an Exploratory Data Analysis (EDA) summary of a dataset.
+    You are a Data Analysis Agent in a Data Analytics system.
 
-    Your input is the result of an EDA process performed on a dataframe. The EDA result already contains structural information about the dataset (such as column types, distributions, missing values, and basic statistics). Your job is to analyze this information and perform deeper statistical and analytical investigation where needed.
+    Your responsibility is to execute data analysis tools in the correct order based on a provided execution list.
 
-    You have access to a set of specialized analytical tools. These tools allow you to compute statistical properties, identify patterns, detect anomalies, analyze relationships between variables, and generate business-relevant insights.
+    INPUT FORMAT:
+    You will receive a list of dictionaries. Each dictionary has the following structure:
 
-    You should use these tools when they will provide meaningful analytical value. Do not run tools unnecessarily. Instead, reason about what insights are missing from the EDA summary and selectively use the most appropriate tools.
+    [
+    {{
+        "tool_name": {{
+            "param1": value1,
+            "param2": value2
+        }}
+    }},
+    {{
+        "another_tool": {{
+            "paramA": valueA
+        }}
+    }}
+    ]
 
-    Your responsibilities include:
+    IMPORTANT RULES:
 
-    1. Understanding the structure and characteristics of the dataset based on the provided EDA output.
-    2. Identifying potential analytical directions such as:
-    - distribution behavior
-    - relationships between variables
-    - drivers of key metrics
-    - anomalies or outliers
-    - segmentation opportunities
-    - category dominance or imbalance
-    - temporal patterns (if time columns exist)
-    3. Choosing appropriate tools to perform deeper statistical analysis.
-    4. Interpreting the results of tool outputs, not just reporting them.
-    5. Producing clear analytical insights that help explain the data.
+    1. The list represents a sequence of tools to be executed in PRIORITY ORDER.
+    2. The FIRST element in the list is always the NEXT tool that must be executed.
+    3. Each dictionary contains:
+    - The KEY → name of the tool to call
+    - The VALUE → dictionary containing the tool's input parameters.
 
-    You must think like a senior data analyst. Your goal is not just to compute statistics, but to discover patterns, explain drivers, and identify potential analytical directions for downstream reporting, visualization, or modeling.
+    YOUR TASK:
 
-    You have access to the following analytical tools:
+    1. Always select the FIRST dictionary from the list.
+    2. Extract:
+    - the tool name (key)
+    - the tool parameters (value dictionary)
+    3. Call the corresponding tool using the extracted parameters.
+    4. After the tool is executed, remove that dictionary from the list.
+    5. Repeat the process with the updated list.
 
-    - characterize_distributions
-    - detect_variance_anomalies
-    - compute_correlation_matrix
-    - detect_nonlinear_relationships
-    - compute_feature_importance
-    - compute_variance_contribution
-    - detect_statistical_outliers
-    - detect_rare_categories
-    - detect_metric_spikes
-    - cluster_companies
-    - segment_by_quantile
-    - detect_time_trends
-    - detect_seasonality_hints
-    - analyze_categorical_dominance
-    - compute_categorical_numeric_relationships
+    STOP CONDITION:
 
-    These tools allow you to perform deeper analysis on numeric, categorical, and temporal features.
+    If the list becomes empty, STOP execution and return:
 
-    Important behavior rules:
+    "All data analysis tools have been executed successfully."
 
-    • You decide which tools to use. There is no fixed sequence of steps.  
-    • Use analytical judgment based on the EDA summary.  
-    • Call tools only when they provide additional insight beyond what the EDA already shows.  
-    • Prefer high-impact analyses such as relationships, drivers, segmentation, and anomaly detection.  
-    • Interpret tool outputs and convert them into meaningful analytical insights.
+    IMPORTANT CONSTRAINTS:
 
-    When using tools:
-    - Select appropriate columns based on the dataset structure.
-    - Avoid redundant tool calls that would produce overlapping insights.
-    - Combine multiple tool outputs when necessary to form a coherent conclusion.
+    - Never skip tools.
+    - Never change the execution order.
+    - Only execute ONE tool at a time.
+    - Always execute the tool at index 0 of the list.
+    - Do not attempt to infer or modify tool parameters.
+    - Do not fabricate new tools.
 
-    When producing your analysis, focus on:
+    OUTPUT BEHAVIOR:
 
-    - Key patterns in the dataset
-    - Important correlations or relationships
-    - Potential drivers of important metrics
-    - Segmentation or clustering opportunities
-    - Data quality issues or anomalies
-    - Business-relevant insights
+    If the list is not empty:
+    → Call the tool from the first dictionary.
 
-    Your output should be an analytical narrative that clearly explains what the data reveals and highlights the most important findings.
+    If the list is empty:
+    → Return a completion message and stop further tool calls.
 
-    You are not limited to a single analysis approach. Explore the dataset intelligently using the available tools. Your goal is to extract the most meaningful insights that can guide business decisions, reporting, or further analysis.
-    
-    
-    EDA_Result : {eda_result}
+    here is the priority list of tools you should follow when executing the analysis process:
+
+    ToolPriorityList: {tools_priority_list}
     
     """
     
-    llm_with_tools.invoke(prompt)
+    response=llm_with_tools.invoke(prompt)
+    
+    return {'messages': [response]}
+    
     

@@ -26,7 +26,9 @@ import warnings
 from typing import Any, Annotated
 from utils.state import AgentState
 from langgraph.prebuilt import InjectedState
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolCallId
+from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 
 import numpy as np
 import pandas as pd
@@ -42,6 +44,12 @@ from sklearn.metrics import silhouette_score
 warnings.filterwarnings("ignore")
 
 
+def remove_first(lst) -> AgentState:
+    return lst[1:]
+
+
+
+
 # ============================================================
 # MODULE 1 — STATISTICAL SUMMARY ANALYSIS
 # ============================================================
@@ -49,10 +57,11 @@ warnings.filterwarnings("ignore")
 @tool
 def characterize_distributions(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: list[str] | None = None,
     skew_threshold: float = 0.5,
     kurt_threshold: float = 1.0,
-) -> dict[str, Any]:
+) -> Command:
     """
     Characterize the statistical distribution of numeric columns beyond .describe().
 
@@ -75,6 +84,7 @@ def characterize_distributions(
             - zero_pct: percentage of zeros (relevant for financial data)
             - recommendation: short analytical note for the agent
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     num_cols = df.select_dtypes(include="number").columns.tolist()
     target_cols = [c for c in (columns or num_cols) if c in num_cols]
@@ -147,16 +157,23 @@ def characterize_distributions(
             "recommendation": " ".join(notes) if notes else "Distribution appears standard.",
         }
 
-    return {'analysis_results' : {'characterize_distributions': results}}
+    return Command(update={
+    "analysis_results": {"characterize_distributions": results},
+    "messages": [ToolMessage(
+        content="characterize_distributions completed successfully",
+        tool_call_id=tool_call_id,
+        )]
+    })
 
 
 @tool
 def detect_variance_anomalies(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     group_col: str | None = None,
     columns: list[str] | None = None,
     cv_flag_threshold: float = 1.5,
-) -> dict[str, Any]:
+) -> Command:
     """
     Detect columns with unusually high or low variance (relative to their mean).
 
@@ -176,6 +193,7 @@ def detect_variance_anomalies(
             - col_stats: per-column CV, std, mean
             - group_variance: (if group_col given) variance breakdown per group
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     num_cols = df.select_dtypes(include="number").columns.tolist()
     target_cols = [c for c in (columns or num_cols) if c in num_cols]
@@ -220,7 +238,10 @@ def detect_variance_anomalies(
         "group_variance": group_variance,
     }
     
-    return {'analysis_results' : {'detect_variance_anomalies' : results}}
+    return Command(update={
+    "analysis_results": {"detect_variance_anomalies": results},
+    "messages": [ToolMessage(content="detect_variance_anomalies completed successfully", tool_call_id=tool_call_id)]
+    })
 
 
 # ============================================================
@@ -230,10 +251,11 @@ def detect_variance_anomalies(
 @tool
 def compute_correlation_matrix(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: list[str] | None = None,
     method: str = "pearson",
     strong_threshold: float = 0.6,
-) -> dict[str, Any]:
+) -> Command:
     """
     Compute a full correlation matrix and extract actionable relationship insights.
 
@@ -254,6 +276,7 @@ def compute_correlation_matrix(
             - driver_candidates: columns most frequently correlated with others
             - method_used: "pearson" or "spearman"
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     num_cols = df.select_dtypes(include="number").columns.tolist()
     target_cols = [c for c in (columns or num_cols) if c in num_cols]
@@ -321,16 +344,23 @@ def compute_correlation_matrix(
         "n_columns_analyzed": len(target_cols),
     }
     
-    return {'analysis_results' : {'compute_correlation_matrix_result':results}}
+    return Command(update={
+    "analysis_results": {"compute_correlation_matrix_result": results},
+    "messages": [ToolMessage(
+        content="compute_correlation_matrix completed successfully",
+        tool_call_id=tool_call_id,
+    )]
+})
 
 
 @tool
 def detect_nonlinear_relationships(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     target_col: str,
     feature_cols: list[str] | None = None,
     pearson_nonlinear_gap: float = 0.2,
-) -> dict[str, Any]:
+) -> Command:
     """
     Identify features with nonlinear relationships to a target variable.
 
@@ -348,6 +378,7 @@ def detect_nonlinear_relationships(
             - nonlinear_candidates: list of columns with possible nonlinear patterns
             - comparison_table: per-column pearson vs spearman breakdown
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     if target_col not in df.columns:
         return {"error": f"Target column '{target_col}' not found."}
@@ -395,7 +426,10 @@ def detect_nonlinear_relationships(
         "n_features_tested": len(comparison),
     }
     
-    return {'analysis_results' : {'detect_nonlinear_relationships_result':results}}
+    return Command(update={
+    "analysis_results": {"detect_nonlinear_relationships_result": results},
+    "messages": [ToolMessage(content="detect_nonlinear_relationships completed successfully", tool_call_id=tool_call_id)]
+    })
 
 
 # ============================================================
@@ -404,12 +438,13 @@ def detect_nonlinear_relationships(
 
 @tool
 def compute_feature_importance(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     target_col: str,
     feature_cols: list[str] | None = None,
     method: str = "random_forest",
     top_n: int = 10,
-) -> dict[str, Any]:
+) -> Command:
     """
     Estimate feature importance scores to identify key drivers of a target metric.
 
@@ -417,7 +452,6 @@ def compute_feature_importance(
     Encodes categorical features automatically using label encoding.
 
     Args:
-        
         target_col: The business metric to explain (e.g., "revenue").
         feature_cols: Predictor columns. Defaults to all other columns.
         method: "random_forest" or "linear".
@@ -430,15 +464,21 @@ def compute_feature_importance(
             - target_col
             - notes: any warnings about data issues
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
+
     if target_col not in df.columns:
-        return {"error": f"Target '{target_col}' not found in DataFrame."}
+        return Command(update={
+            "analysis_results": {"compute_feature_importance_result": {"error": f"Target '{target_col}' not found in DataFrame."}},
+            "messages": [ToolMessage(content=f"Error: Target '{target_col}' not found in DataFrame.", tool_call_id=tool_call_id)]
+        })
 
     all_cols = [c for c in df.columns if c != target_col]
     feature_cols = feature_cols or all_cols
 
-    # Build working frame
+    # Build working frame and globally replace inf before anything else
     work = df[feature_cols + [target_col]].copy()
+    work = work.replace([np.inf, -np.inf], np.nan)
     work = work.dropna(subset=[target_col])
 
     # Encode categoricals
@@ -455,11 +495,27 @@ def compute_feature_importance(
                 work.drop(columns=[col], inplace=True)
 
     valid_features = [c for c in feature_cols if c in work.columns]
-    X = work[valid_features].fillna(work[valid_features].median())
-    y = work[target_col]
+
+    # Replace any inf introduced during encoding, then fill NaN with median
+    X = work[valid_features].replace([np.inf, -np.inf], np.nan)
+    col_medians = X.median().fillna(0)  # fallback to 0 if entire column is NaN
+    X = X.fillna(col_medians)
+
+    # Clip to float32 safe range to prevent overflow during sklearn's internal cast
+    float32_max = np.finfo(np.float32).max
+    X = X.clip(-float32_max, float32_max)
+
+    # Clean target and align rows
+    y = work[target_col].replace([np.inf, -np.inf], np.nan)
+    valid_idx = y.dropna().index
+    X = X.loc[valid_idx]
+    y = y.loc[valid_idx]
 
     if X.empty or len(X) < 10:
-        return {"error": "Insufficient data after preprocessing."}
+        return Command(update={
+            "analysis_results": {"compute_feature_importance_result": {"error": "Insufficient data after preprocessing."}},
+            "messages": [ToolMessage(content="Error: Insufficient data after preprocessing.", tool_call_id=tool_call_id)]
+        })
 
     importances: list[tuple[str, float]] = []
 
@@ -478,7 +534,10 @@ def compute_feature_importance(
         importances = list(zip(valid_features, np.abs(model.coef_)))
 
     else:
-        return {"error": f"Unknown method '{method}'. Use 'random_forest' or 'linear'."}
+        return Command(update={
+            "analysis_results": {"compute_feature_importance_result": {"error": f"Unknown method '{method}'. Use 'random_forest' or 'linear'."}},
+            "messages": [ToolMessage(content=f"Error: Unknown method '{method}'.", tool_call_id=tool_call_id)]
+        })
 
     importances.sort(key=lambda x: x[1], reverse=True)
     top = importances[:top_n]
@@ -494,22 +553,30 @@ def compute_feature_importance(
         for i, (feat, val) in enumerate(top)
     ]
 
-    results= {
+    results = {
         "target_col": target_col,
         "method_used": method,
         "top_drivers": top_drivers,
         "n_features_evaluated": len(valid_features),
         "notes": notes,
     }
-    return {'analysis_results' : {'compute_feature_importance_result':results}}
+
+    return Command(update={
+        "analysis_results": {"compute_feature_importance_result": results},
+        "messages": [ToolMessage(
+            content="compute_feature_importance completed successfully",
+            tool_call_id=tool_call_id,
+        )]
+    })
 
 
 @tool
 def compute_variance_contribution(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     target_col: str,
     group_cols: list[str],
-) -> dict[str, Any]:
+) -> Command:
     """
     Quantify how much of the target variable's variance is explained by each
     categorical grouping variable (eta-squared / ANOVA-based decomposition).
@@ -527,6 +594,7 @@ def compute_variance_contribution(
             - results: list of {group_col, eta_squared, kruskal_pvalue, interpretation}
             - ranked by explanatory power
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     if target_col not in df.columns:
         return {"error": f"Target column '{target_col}' not found."}
@@ -576,7 +644,10 @@ def compute_variance_contribution(
         "results": results,
         "top_driver": results[0]["group_col"] if results else None,
     }
-    return {'analysis_results' : {'compute_variance_contribution_result':results}}
+    return Command(update={
+    "analysis_results": {"compute_variance_contribution_result": results},
+    "messages": [ToolMessage(content="compute_variance_contribution completed successfully", tool_call_id=tool_call_id)]
+    })
 
 
 # ============================================================
@@ -586,12 +657,13 @@ def compute_variance_contribution(
 @tool
 def detect_statistical_outliers(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId], 
     columns: list[str] | None = None,
     method: str = "iqr",
     iqr_multiplier: float = 1.5,
     zscore_threshold: float = 3.0,
     return_rows: bool = True,
-) -> dict[str, Any]:
+) -> Command:
     """
     Detect outliers in numeric columns using IQR fence or Z-score methods.
 
@@ -613,6 +685,7 @@ def detect_statistical_outliers(
             - outlier_indices (if return_rows=True)
             - summary: list of high-impact columns sorted by outlier_pct
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     num_cols = df.select_dtypes(include="number").columns.tolist()
     target_cols = [c for c in (columns or num_cols) if c in num_cols]
@@ -665,15 +738,23 @@ def detect_statistical_outliers(
         "summary_ranked": summary_rows,
         "high_outlier_cols": [r["column"] for r in summary_rows if r["outlier_pct"] > 5.0],
     }
-    return {'analysis_results' : {'detect_statistical_outliers_result':results}}
+    
+    return Command(update={
+    "analysis_results": {"detect_statistical_outliers_result": results},
+    "messages": [ToolMessage(
+        content="detect_statistical_outliers completed successfully",
+        tool_call_id=tool_call_id,
+        )]
+    })
 
 
 @tool
 def detect_rare_categories(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: list[str] | None = None,
     rare_threshold_pct: float = 2.0,
-) -> dict[str, Any]:
+) -> Command:
     """
     Identify rare or sparse categories in categorical columns.
 
@@ -692,6 +773,7 @@ def detect_rare_categories(
             - dominant_category: {value, pct}
             - imbalance_ratio: dominant_pct / second_pct
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
     target_cols = [c for c in (columns or cat_cols) if c in cat_cols]
@@ -728,17 +810,26 @@ def detect_rare_categories(
             ),
         }
 
-    return {'analysis_results' : {'detect_rare_categories_result':results}}
+    # return {'analysis_results' : {'detect_rare_categories_result':results}}
+    
+    return Command(update={
+        "analysis_results": {"detect_rare_categories_result": results},
+        "messages": [ToolMessage(          # ✅ required by LangGraph
+            content="detect_rare_categories completed successfully",
+            tool_call_id=tool_call_id,
+        )]
+    })
 
 
 @tool
 def detect_metric_spikes(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     value_col: str,
     time_col: str | None = None,
     group_col: str | None = None,
     spike_zscore: float = 2.5,
-) -> dict[str, Any]:
+) -> Command:
     """
     Detect sudden spikes or drops in a business metric, optionally across time or groups.
 
@@ -758,6 +849,7 @@ def detect_metric_spikes(
             - n_spikes
             - severity_summary
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     if value_col not in df.columns:
         return {"error": f"Column '{value_col}' not found."}
@@ -807,7 +899,10 @@ def detect_metric_spikes(
         "severity_summary": severity_summary,
     }
     
-    return {'analysis_results' : {'detect_metric_spikes_result':results}}
+    return Command(update={
+    "analysis_results": {"detect_metric_spikes_result": results},
+    "messages": [ToolMessage(content="detect_metric_spikes completed successfully", tool_call_id=tool_call_id)]
+    })
 
 
 # ============================================================
@@ -817,12 +912,13 @@ def detect_metric_spikes(
 @tool
 def cluster_companies(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     feature_cols: list[str],
     n_clusters: int | None = None,
     max_clusters: int = 6,
     cluster_label_col: str = "cluster_label",
     scale: bool = True,
-) -> dict[str, Any]:
+) -> Command:
     """
     Segment companies (or rows) into clusters using KMeans.
 
@@ -846,6 +942,7 @@ def cluster_companies(
             - silhouette_score
             - cluster_descriptions: human-readable summaries per cluster
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     valid_cols = [c for c in feature_cols if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
     if len(valid_cols) < 2:
@@ -916,16 +1013,27 @@ def cluster_companies(
         "features_used": valid_cols,
     }
     
-    return {'analysis_results' : {'cluster_companies_result':results}}
+    return Command(update={
+    "analysis_results": {"cluster_companies_result": results},
+    "messages": [ToolMessage(content="cluster_companies completed successfully", tool_call_id=tool_call_id)]
+    })
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DROP-IN REPLACEMENT for segment_by_quantile in data_analysis_tools.py
+#
+# Replace the existing segment_by_quantile function with this one.
+# No other changes to data_analysis_tools.py are needed.
+# ─────────────────────────────────────────────────────────────────────────────
 
 @tool
 def segment_by_quantile(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     value_col: str,
     n_tiers: int = 4,
     tier_labels: list[str] | None = None,
-) -> dict[str, Any]:
+) -> Command:
     """
     Segment records into performance tiers based on quantile cut of a single metric.
 
@@ -933,7 +1041,6 @@ def segment_by_quantile(
     Commonly used for SMB stratification (micro/small/medium/large).
 
     Args:
-        
         value_col: Column to tier on (e.g., "revenue", "growth_rate").
         n_tiers: Number of tiers (4 = quartile, 5 = quintile, etc.).
         tier_labels: Custom labels. Defaults to ["Tier 1 (Bottom)", ..., "Tier N (Top)"].
@@ -945,7 +1052,9 @@ def segment_by_quantile(
             - tier_profiles: mean of all numeric cols per tier
             - tier_assignments: index -> tier label
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
+
     if value_col not in df.columns:
         return {"error": f"Column '{value_col}' not found."}
 
@@ -958,6 +1067,48 @@ def segment_by_quantile(
         return {"error": "tier_labels length must match n_tiers."}
 
     work = df.copy()
+
+    # ✅ Guard: coerce column to numeric if it is object/string dtype.
+    # This handles cases where fix_dtypes was skipped or missed the column
+    # (e.g. price columns with "$", "," symbols like "$1,200").
+    if not pd.api.types.is_numeric_dtype(work[value_col]):
+        original_dtype = str(work[value_col].dtype)
+        work[value_col] = pd.to_numeric(
+            work[value_col]
+            .astype(str)
+            .str.strip()
+            .str.replace(r"[$€£¥₹%,\s]", "", regex=True)
+            .str.replace(r"[^\d.\-eE]", "", regex=True),
+            errors="coerce",
+        )
+        coerced_nulls = int(work[value_col].isna().sum())
+
+        # If the entire column is NaN after coercion, it's not a numeric column
+        if work[value_col].dropna().empty:
+            return {
+                "error": (
+                    f"Column '{value_col}' (original dtype: {original_dtype}) "
+                    f"has no numeric values after coercion. "
+                    f"Run fix_dtypes first or choose a numeric column."
+                )
+            }
+
+        # Warn if too many values were lost during coercion (>30%)
+        if coerced_nulls > len(work) * 0.3:
+            return {
+                "error": (
+                    f"Column '{value_col}' produced {coerced_nulls} NaNs after coercion "
+                    f"({coerced_nulls / len(work):.1%} of rows). "
+                    f"This column may not be a numeric metric. "
+                    f"Run fix_dtypes first."
+                )
+            }
+
+        print(
+            f"[segment_by_quantile] Warning: '{value_col}' was dtype '{original_dtype}', "
+            f"coerced to numeric. {coerced_nulls} NaN(s) introduced."
+        )
+
     try:
         work["_tier_"] = pd.qcut(
             work[value_col], q=n_tiers, labels=tier_labels, duplicates="drop"
@@ -998,7 +1149,7 @@ def segment_by_quantile(
         if pd.notna(val)
     }
 
-    results= {
+    results = {
         "value_col": value_col,
         "n_tiers": n_tiers,
         "tier_distribution": tier_dist.to_dict(orient="records"),
@@ -1006,8 +1157,16 @@ def segment_by_quantile(
         "tier_profiles": tier_profiles,
         "tier_assignments": tier_assignments,
     }
+
+    # return {"analysis_results": {"segment_by_quantile_result": results}}
     
-    return {'analysis_results' : {'segment_by_quantile_result':results}}
+    return Command(update={
+        "analysis_results": {"segment_by_quantile_result": results},
+        "messages": [ToolMessage(          # ✅ required by LangGraph
+            content="segment_by_quantile completed successfully",
+            tool_call_id=tool_call_id,
+        )]
+    })
 
 
 # ============================================================
@@ -1017,11 +1176,12 @@ def segment_by_quantile(
 @tool
 def detect_time_trends(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     time_col: str,
     value_cols: list[str],
     freq: str = "auto",
     trend_pvalue_threshold: float = 0.05,
-) -> dict[str, Any]:
+) -> Command:
     """
     Detect trends, growth/decline patterns, and acceleration/deceleration in time series.
 
@@ -1044,6 +1204,7 @@ def detect_time_trends(
             - avg_period_growth_pct
             - recent_acceleration: growth rate in last 25% vs first 75%
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     if time_col not in df.columns:
         return {"error": f"Time column '{time_col}' not found."}
@@ -1124,15 +1285,18 @@ def detect_time_trends(
         "trending_down": [c for c, v in results.items() if v.get("trend_direction") == "decreasing"],
     }
     
-    return {'analysis_results' : {'detect_time_trends_result':results}}
-
+    return Command(update={
+    "analysis_results": {"detect_time_trends_result": results},
+    "messages": [ToolMessage(content="detect_time_trends completed successfully", tool_call_id=tool_call_id)]
+    })
 
 @tool
 def detect_seasonality_hints(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     time_col: str,
     value_col: str,
-) -> dict[str, Any]:
+) -> Command:
     """
     Detect potential seasonality patterns by analyzing monthly or quarterly averages.
 
@@ -1153,6 +1317,7 @@ def detect_seasonality_hints(
             - seasonality_strength: coefficient of variation of monthly means
             - interpretation
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     if time_col not in df.columns or value_col not in df.columns:
         return {"error": "One or more required columns not found."}
@@ -1189,7 +1354,10 @@ def detect_seasonality_hints(
         "interpretation": interpretation,
     }
     
-    return {'analysis_results' : {'detect_seasonality_hints_result':results}}
+    return Command(update={
+    "analysis_results": {"detect_seasonality_hints_result": results},
+    "messages": [ToolMessage(content="detect_seasonality_hints completed successfully", tool_call_id=tool_call_id)]
+    })
 
 
 # ============================================================
@@ -1199,10 +1367,11 @@ def detect_seasonality_hints(
 @tool
 def analyze_categorical_dominance(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: list[str] | None = None,
     top_n: int = 10,
     dominance_threshold_pct: float = 50.0,
-) -> dict[str, Any]:
+) -> Command:
     """
     Analyze distribution patterns across categorical columns.
 
@@ -1224,6 +1393,7 @@ def analyze_categorical_dominance(
             - entropy: distribution evenness (higher = more even)
             - useful_for_segmentation: bool
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
     target_cols = [c for c in (columns or cat_cols) if c in cat_cols]
@@ -1267,16 +1437,25 @@ def analyze_categorical_dominance(
             ),
         }
 
-    return {'analysis_results' : {'analyze_categorical_dominance_result':results}}
+    # return {'analysis_results' : {'analyze_categorical_dominance_result':results}}
+    
+    return Command(update={
+        "analysis_results": {"analyze_categorical_dominance_result": results},
+        "messages": [ToolMessage(          # ✅ required by LangGraph
+            content="analyze_categorical_dominance completed successfully",
+            tool_call_id=tool_call_id,
+        )]
+    })
 
 
 @tool
 def compute_categorical_numeric_relationships(
     state: Annotated[ AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     cat_cols: list[str] | None = None,
     num_cols: list[str] | None = None,
     top_n_cats: int = 20,
-) -> dict[str, Any]:
+) -> Command:
     """
     Compute mean/median of numeric columns broken down by each categorical column.
 
@@ -1295,6 +1474,7 @@ def compute_categorical_numeric_relationships(
             - best_category / worst_category
             - spread_ratio: best_mean / worst_mean
     """
+    remove_first(state["tool_priority_list_2"])
     df = state["clean_df"]
     default_cats = df.select_dtypes(include=["object", "category"]).columns.tolist()
     default_nums = df.select_dtypes(include="number").columns.tolist()
@@ -1339,7 +1519,11 @@ def compute_categorical_numeric_relationships(
                 "spread_ratio": spread,
             }
 
-    return {'analysis_results' : {'compute_categorical_numeric_relationships_result':results}}
+    return Command(update={
+    "analysis_results": {"compute_categorical_numeric_relationships_result": results},
+    "messages": [ToolMessage(content="compute_categorical_numeric_relationships completed successfully", tool_call_id=tool_call_id)]
+    })
+
 
 
 
@@ -1350,11 +1534,12 @@ def compute_categorical_numeric_relationships(
 # @tool
 # def run_full_analysis(
 #     state: Annotated[ AgentState, InjectedState],
+# tool_call_id: Annotated[str, InjectedToolCallId],
 #     target_col: str | None = None,
 #     time_col: str | None = None,
 #     group_cols: list[str] | None = None,
 #     cluster_feature_cols: list[str] | None = None,
-# ) -> dict[str, Any]:
+# ) -> Command:
 #     """
 #     Orchestrator that runs the complete analytical toolkit in sequence.
 

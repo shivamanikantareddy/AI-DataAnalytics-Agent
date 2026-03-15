@@ -16,6 +16,7 @@ Version : 1.0.0
 """
 from __future__ import annotations
 from utils.state import AgentState
+from tools.eda_agent_summary import build_agent_summary
 
 import logging
 import warnings
@@ -209,7 +210,7 @@ def numeric_univariate_analysis(
 def categorical_univariate_analysis(
     df: pd.DataFrame,
     categorical_cols: List[str],
-    top_n: int = 20,
+    top_n: int = 5,
 ) -> Dict[str, Any]:
     """
     Compute frequency distributions and cardinality metrics for categorical features.
@@ -738,209 +739,6 @@ def cardinality_analysis(
     }
 
 
-# ===========================================================================
-# HELPER 10: VISUALIZATION RECOMMENDATIONS
-# ===========================================================================
-
-# def generate_visualization_recommendations(
-#     feature_types: Dict[str, List[str]],
-#     numeric_stats: Dict[str, Any],
-#     outlier_data: Dict[str, Any],
-#     corr_data: Dict[str, Any],
-#     distribution_data: Dict[str, Any],
-#     cardinality_data: Dict[str, Any],
-# ) -> List[Dict[str, Any]]:
-#     """
-#     Generate a prioritised list of visualization recommendations.
-
-#     Each recommendation is a dict with:
-#     - ``chart_type``  : e.g. "histogram", "boxplot", "scatter", ...
-#     - ``columns``     : list of columns involved
-#     - ``priority``    : "high" | "medium" | "low"
-#     - ``reasoning``   : plain-English justification
-#     - ``config_hints``: optional rendering hints for the downstream viz layer
-
-#     Parameters
-#     ----------
-#     feature_types     : output of detect_feature_types
-#     numeric_stats     : output of numeric_univariate_analysis
-#     outlier_data      : output of detect_outliers_iqr
-#     corr_data         : output of compute_correlations
-#     distribution_data : output of distribution_analysis
-#     cardinality_data  : output of cardinality_analysis
-
-#     Returns
-#     -------
-#     list of recommendation dicts
-#     """
-#     recs: List[Dict[str, Any]] = []
-
-#     numeric_cols = feature_types.get("numeric", [])
-#     cat_cols = feature_types.get("categorical", [])
-#     bool_cols = feature_types.get("boolean", [])
-#     dt_cols = feature_types.get("datetime", [])
-
-#     # ── Histograms for every numeric column ───────────────────────────────
-#     for col in numeric_cols:
-#         skew = numeric_stats.get(col, {}).get("skewness", 0.0)
-#         tags = distribution_data.get("distribution_tags", {}).get(col, [])
-#         recs.append(
-#             {
-#                 "chart_type": "histogram",
-#                 "columns": [col],
-#                 "priority": "high",
-#                 "reasoning": (
-#                     f"Numeric column '{col}' (skewness={skew:.2f}). "
-#                     "Histograms reveal the shape, modality, and spread of distributions."
-#                 ),
-#                 "config_hints": {
-#                     "bins": "auto",
-#                     "kde_overlay": True,
-#                     "log_scale_x": col in distribution_data.get("log_transform_candidates", []),
-#                     "tags": tags,
-#                 },
-#             }
-#         )
-
-#     # ── Boxplots for columns with outliers ────────────────────────────────
-#     for col, stats_dict in outlier_data.items():
-#         if stats_dict.get("has_outliers"):
-#             recs.append(
-#                 {
-#                     "chart_type": "boxplot",
-#                     "columns": [col],
-#                     "priority": "high",
-#                     "reasoning": (
-#                         f"'{col}' has {stats_dict['n_outliers_total']} outliers "
-#                         f"({stats_dict['outlier_pct']}%). "
-#                         "Boxplots visually summarise spread and flag extremes."
-#                     ),
-#                     "config_hints": {
-#                         "show_fliers": True,
-#                         "outlier_pct": stats_dict["outlier_pct"],
-#                     },
-#                 }
-#             )
-
-#     # ── Bar charts for low-cardinality categoricals ────────────────────────
-#     high_card_cols = {
-#         d["column"] for d in cardinality_data.get("high_cardinality_features", [])
-#     }
-#     for col in cat_cols:
-#         if col not in high_card_cols:
-#             recs.append(
-#                 {
-#                     "chart_type": "bar_chart",
-#                     "columns": [col],
-#                     "priority": "high",
-#                     "reasoning": (
-#                         f"Categorical '{col}' has low cardinality. "
-#                         "Bar charts clearly show frequency distributions."
-#                     ),
-#                     "config_hints": {"sort_by": "frequency", "top_n": 20},
-#                 }
-#             )
-
-#     # ── Scatter plots for strongly correlated pairs ────────────────────────
-#     for pair in corr_data.get("strong_pairs", []):
-#         recs.append(
-#             {
-#                 "chart_type": "scatter_plot",
-#                 "columns": [pair["col_a"], pair["col_b"]],
-#                 "priority": "high",
-#                 "reasoning": (
-#                     f"Strong {pair['direction']} correlation "
-#                     f"(r={pair['correlation']}) between '{pair['col_a']}' and "
-#                     f"'{pair['col_b']}'. Scatter plots reveal linear/non-linear trends."
-#                 ),
-#                 "config_hints": {
-#                     "regression_line": True,
-#                     "correlation": pair["correlation"],
-#                 },
-#             }
-#         )
-
-#     # ── Correlation heatmap (all numeric) ─────────────────────────────────
-#     if len(numeric_cols) >= 3:
-#         recs.append(
-#             {
-#                 "chart_type": "heatmap",
-#                 "columns": numeric_cols,
-#                 "priority": "high",
-#                 "reasoning": (
-#                     "Heatmap provides a single-view summary of all pairwise "
-#                     "Pearson correlations across numeric features."
-#                 ),
-#                 "config_hints": {
-#                     "annotate": len(numeric_cols) <= 15,
-#                     "cmap": "coolwarm",
-#                     "center": 0,
-#                 },
-#             }
-#         )
-
-#     # ── Pair plot for small numeric feature sets ───────────────────────────
-#     if 2 <= len(numeric_cols) <= 8:
-#         recs.append(
-#             {
-#                 "chart_type": "pair_plot",
-#                 "columns": numeric_cols,
-#                 "priority": "medium",
-#                 "reasoning": (
-#                     "Pair plot (scatterplot matrix) provides a comprehensive "
-#                     "bivariate overview across all numeric features at once."
-#                 ),
-#                 "config_hints": {"diag": "kde", "hue": cat_cols[0] if cat_cols else None},
-#             }
-#         )
-
-#     # ── Grouped boxplot: numeric × categorical ─────────────────────────────
-#     low_card_cats = [c for c in cat_cols if c not in high_card_cols]
-#     for cat in low_card_cats[:3]:  # limit to top 3 categoricals
-#         for num in numeric_cols[:5]:  # limit to top 5 numerics
-#             recs.append(
-#                 {
-#                     "chart_type": "grouped_boxplot",
-#                     "columns": [num, cat],
-#                     "priority": "medium",
-#                     "reasoning": (
-#                         f"Grouped boxplot of '{num}' by '{cat}' reveals "
-#                         "distributional differences across groups."
-#                     ),
-#                     "config_hints": {"orient": "v", "show_points": True},
-#                 }
-#             )
-
-#     # ── Boolean columns as bar/pie ─────────────────────────────────────────
-#     for col in bool_cols:
-#         recs.append(
-#             {
-#                 "chart_type": "bar_chart",
-#                 "columns": [col],
-#                 "priority": "low",
-#                 "reasoning": f"Boolean '{col}' — bar chart shows True/False balance.",
-#                 "config_hints": {"as_percentage": True},
-#             }
-#         )
-
-#     # ── Time series plots ──────────────────────────────────────────────────
-#     for col in dt_cols:
-#         for num in numeric_cols[:3]:
-#             recs.append(
-#                 {
-#                     "chart_type": "line_chart",
-#                     "columns": [col, num],
-#                     "priority": "high",
-#                     "reasoning": (
-#                         f"'{num}' plotted over datetime '{col}' to reveal "
-#                         "temporal trends and seasonality."
-#                     ),
-#                     "config_hints": {"x": col, "y": num, "resample": "auto"},
-#                 }
-#             )
-
-#     logger.info("Generated %d visualization recommendations.", len(recs))
-#     return recs
 
 
 # ===========================================================================
@@ -1116,12 +914,15 @@ def perform_eda( state : AgentState ) -> AgentState:
         "feature_relationships": feature_relationships,
         # "visualization_recommendations": viz_recs,
     }
+    
+    summary = build_agent_summary(eda_result)
 
     logger.info(
         "EDA pipeline complete. %d sections generated.",
         len(eda_result),
         # len(viz_recs),
     )
-    return {'eda_result': eda_result}
+    
+    return {'eda_result': eda_result, 'eda_summary': summary}
 
 

@@ -34,7 +34,6 @@ def health_check():
 @app.post("/load_dataset")
 async def knowledge_assistant(file : UploadFile = File(..., description="Dataset file to be processed and loaded into the knowledge base. Supported formats: CSV, Excel, JSON.")):
 
-
         MAX_SIZE= 500 * 1024 ** 2
         
         file_size = file.size
@@ -61,7 +60,7 @@ async def knowledge_assistant(file : UploadFile = File(..., description="Dataset
                     
             return run_agent(file_path)
 
-            
+
         try:
             
             report = await process_file(file,file_path)
@@ -70,7 +69,7 @@ async def knowledge_assistant(file : UploadFile = File(..., description="Dataset
             print(str(e))
             raise HTTPException(status_code=500, detail="Failed to process and load the file.")
     
-        return JSONResponse(status_code=200, content={"message": f"{file.filename} stored and profiled successfully. report : {report}"})
+        return JSONResponse(status_code=200, content={"message": f"{file.filename} stored and profiled successfully. Report : {report}"})
     
 
 # @app.post('/chat_assistant')
