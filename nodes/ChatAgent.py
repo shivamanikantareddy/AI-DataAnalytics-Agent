@@ -45,6 +45,19 @@ answering — do not rely on general knowledge or assumptions.
 """)
 
 
+def _extract_text(content) -> str:
+    """Safely extract plain string from str or list[dict] Gemini response."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return " ".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        ).strip()
+    return str(content).strip()
+
+
+
 def chat_node(state: AgentState):
     # Build full message history
     messages = [SYSTEM_PROMPT]
@@ -59,7 +72,10 @@ def chat_node(state: AgentState):
     )
 
     if user_input.strip().lower() == "done":
-        return {"chat_active": False}
+        return {
+            "chat_active": False,
+            "messages": [HumanMessage(content=user_input)],  # ← log it
+        }
 
     messages.append(HumanMessage(content=user_input))
 
@@ -83,15 +99,21 @@ def chat_node(state: AgentState):
 
         # Second LLM call with tool results in context
         final_response = llm_with_tools.invoke(messages)
-        final_answer = final_response.content or "I couldn't generate a response based on the retrieved data."
-
+        final_answer = _extract_text(final_response.content)  # ← safe extraction
     else:
-        # Model answered directly without tool use (e.g. clarifying question)
-        final_answer = response.content or "I couldn't generate a response."
+        final_answer = _extract_text(response.content)        # ← safe extraction
+
+    if not final_answer:
+        final_answer = "I couldn't generate a response based on the retrieved data."
+
 
     return {
         "chat_history": [{"user": user_input, "assistant": final_answer}],
         "chat_active": True,
+        "messages": [
+            HumanMessage(content=user_input),
+            AIMessage(content=final_answer),      # ← this was missing
+        ],
     }
 
 

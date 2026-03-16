@@ -12,6 +12,8 @@ import warnings
 import numpy as np
 import pandas as pd
 from typing import Any
+from utils.dataframe_store import load_df
+from utils.serialization import to_serializable
 
 warnings.filterwarnings("ignore")
 
@@ -349,7 +351,7 @@ def profile_dataframe(state: AgentState) -> AgentState:
     Reads state["df"] (a pandas DataFrame) and returns:
         { "report": { ... structured cleaning signals ... } }
     """
-    df: pd.DataFrame = state["df"]
+    df: pd.DataFrame = load_df(state["df_key"])
 
     if not isinstance(df, pd.DataFrame):
         raise TypeError(f"state['df'] must be a pandas DataFrame, got {type(df)}")
@@ -362,7 +364,7 @@ def profile_dataframe(state: AgentState) -> AgentState:
         "key_analysis": _analyze_keys(df),
     }
 
-    return {"report": report}
+    return {"report": to_serializable(report)}
 
 
 # import pandas as pd

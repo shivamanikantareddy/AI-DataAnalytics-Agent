@@ -37,31 +37,28 @@ def append_chat_turns(
 
 # ── State ────────────────────────────────────────────────────────────────────
 
-class AgentState(TypedDict):
-    # ── LLM message bus (tool calls, AI responses, etc.) ──
-    messages: Annotated[List[BaseMessage], add_messages]
+class AgentState(TypedDict, total=False):
+    messages:             Annotated[List[BaseMessage], add_messages]
+    file_path:            str          # ← str, not Path (Path isn't serializable either)
 
-    # ── Input data ──
-    # NOTE: Path and DataFrame are not serializable by LangGraph checkpointers.
-    # Avoid using memory/sqlite checkpointers if these fields are populated.
-    file_path: Path
-    df: pd.DataFrame
+    # ── DataFrames stored externally, referenced by key ──
+    df_key:               str          # key into dataframe_store for raw df
+    clean_df_key:         str          # key into dataframe_store for cleaned df
 
     # ── Cleaning stage ──
-    report: Dict[str, Any]                                              # raw profiling report
-    cleaning_summary: Annotated[Dict[str, Any], merge_dicts_shallow]   # accumulated cleaning steps
-    tool_priority_list_1: List[Dict[str, Any]]                         # cleaning tool queue
-    clean_df: pd.DataFrame                                              # cleaned dataframe
+    report:               Dict[str, Any]
+    cleaning_summary:     Annotated[Dict[str, Any], merge_dicts_shallow]
+    tool_priority_list_1: List[Dict[str, Any]]
 
     # ── EDA stage ──
-    tool_priority_list_2: List[Dict[str, Any]]                         # EDA tool queue
-    eda_result: Dict[str, Any]                                          # raw EDA outputs
-    eda_summary: Dict[str, Any]                                         # summarized EDA findings
+    eda_result:           Dict[str, Any]
+    eda_summary:          Dict[str, Any]
+    tool_priority_list_2: List[Dict[str, Any]]
 
     # ── Analysis stage ──
-    tool_priority_list_3: List[Dict[str, Any]]                         # analysis tool queue
-    analysis_results: Annotated[Dict[str, Any], merge_dicts_deep]      # deep-merged across nodes
+    analysis_results:     Annotated[Dict[str, Any], merge_dicts_deep]
+    tool_priority_list_3: List[Dict[str, Any]]
 
     # ── Chat stage ──
-    chat_history: Annotated[List[Dict[str, str]], append_chat_turns]   # [{"user": ..., "assistant": ...}]
-    chat_active: bool                                                   # controls chat loop routing
+    chat_history:         Annotated[List[Dict[str, str]], append_chat_turns]
+    chat_active:          bool

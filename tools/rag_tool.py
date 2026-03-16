@@ -1,40 +1,24 @@
-from langchain_community.document_loaders import TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.tools import tool
 from pathlib import Path
 
+
 VECTORSTORE_PATH = Path("./utils/faiss_index")
-ANALYTICS_FILE   = Path("./uploads/Analytics_summary.txt")
 
-CHUNK_SIZE    = 800
-CHUNK_OVERLAP = 100
-TOP_K         = 4
+def load_vectorstore():
 
-
-def _get_embeddings() -> GoogleGenerativeAIEmbeddings:
-    return GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
-
-
-def build_vectorstore(filepath: Path) -> FAISS:
-    try:
-        loader = TextLoader(str(filepath), encoding="utf-8")
-        docs = loader.load()
-    except Exception as e:
-        raise RuntimeError(f"Failed to load document '{filepath}': {e}") from e
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="gemini-embedding-001"
     )
-    chunks = splitter.split_documents(docs)
 
-    vectorstore = FAISS.from_documents(chunks, _get_embeddings())
-    vectorstore.save_local(str(VECTORSTORE_PATH))
+    vectorstore = FAISS.load_local(
+        str(VECTORSTORE_PATH),
+        embeddings,
+        allow_dangerous_deserialization=True
+    )
 
     return vectorstore
-
 
 @tool
 def rag_chat_tool(query: str) -> str:
@@ -53,11 +37,11 @@ def rag_chat_tool(query: str) -> str:
         Returns a not-found message if no relevant content exists.
     """
     try:
-        vectorstore = build_vectorstore(ANALYTICS_FILE)  # ✅ always rebuild with latest data
+        vectorstore = load_vectorstore()  # ✅ always rebuild with latest data
     except Exception as e:
         return f"Failed to build knowledge base: {e}"
 
-    retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
     retrieved_docs = retriever.invoke(query)
 

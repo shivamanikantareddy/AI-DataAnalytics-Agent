@@ -17,6 +17,8 @@ Version : 1.0.0
 from __future__ import annotations
 from utils.state import AgentState
 from tools.eda_agent_summary import build_agent_summary
+from utils.dataframe_store import load_df
+from utils.serialization import to_serializable
 
 import logging
 import warnings
@@ -840,7 +842,7 @@ def perform_eda( state : AgentState ) -> AgentState:
     >>> print(eda_results["dataset_summary"])
     >>> print(eda_results["visualization_recommendations"][0])
     """
-    df=state["clean_df"]
+    df=load_df(state["df_key"])
     
     logger.info("=" * 70)
     logger.info("Enterprise EDA pipeline starting...")
@@ -923,6 +925,8 @@ def perform_eda( state : AgentState ) -> AgentState:
         # len(viz_recs),
     )
     
-    return {'eda_result': eda_result, 'eda_summary': summary}
-
+    return {
+    "eda_result":  to_serializable(eda_result),
+    "eda_summary": to_serializable(summary),
+    }
 

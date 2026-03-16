@@ -15,8 +15,11 @@ import warnings
 import logging
 from pathlib import Path
 from typing import Any, Optional, Union, Annotated
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolCallId
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 from utils.state import AgentState
+from utils.dataframe_store import load_df                  # ← added
 from langgraph.prebuilt import InjectedState
 
 import numpy as np
@@ -75,8 +78,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Visualization Normalizer----------------------------------
-
+# ─────────────────────────────────────────────────────────────────────────────
+# VISUALIZATION NORMALIZER
+# ─────────────────────────────────────────────────────────────────────────────
 
 from plotly.tools import mpl_to_plotly
 import matplotlib.figure
@@ -84,62 +88,38 @@ import plotly.graph_objects as go
 import seaborn as sns
 
 def convert_plotly(fig):
-    return {
-        "type": "plotly",
-        "figure": fig.to_dict()
-    }
-    
+    return {"type": "plotly", "figure": fig.to_dict()}
+
 def convert_matplotlib(fig):
-
     plotly_fig = mpl_to_plotly(fig)
+    return {"type": "plotly", "figure": plotly_fig.to_dict()}
 
-    return {
-        "type": "plotly",
-        "figure": plotly_fig.to_dict()
-    }
-    
 def convert_seaborn(grid):
-
     fig = grid.fig
     plotly_fig = mpl_to_plotly(fig)
-
-    return {
-        "type": "plotly",
-        "figure": plotly_fig.to_dict()
-    }
-
+    return {"type": "plotly", "figure": plotly_fig.to_dict()}
 
 def normalize_chart(chart):
-
     if isinstance(chart, go.Figure):
         return convert_plotly(chart)
-
     if isinstance(chart, matplotlib.figure.Figure):
         return convert_matplotlib(chart)
-
     if isinstance(chart, sns.axisgrid.PairGrid):
         return convert_seaborn(chart)
-
     raise ValueError("Unsupported chart type")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CATEGORY 14: DECISION SUPPORT HELPERS  (defined first – used everywhere)
+# CATEGORY 14: DECISION SUPPORT HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def remove_first(lst):
-    return lst[1:]
-
 def get_numeric_columns(df: pd.DataFrame) -> list[str]:
-    """Return all numeric column names."""
     return list(df.select_dtypes(include="number").columns)
 
 def get_categorical_columns(df: pd.DataFrame) -> list[str]:
-    """Return all categorical / object / bool column names."""
     return list(df.select_dtypes(include=["object", "category", "bool"]).columns)
 
 def validate_columns_exist(df: pd.DataFrame, columns: list[str]) -> None:
-    """Raise ValueError if any column is missing from *df*."""
     missing = [c for c in columns if c not in df.columns]
     if missing:
         raise ValueError(f"Columns not found in DataFrame: {missing}")
@@ -169,21 +149,15 @@ _THEME_DEFAULTS = {
     "legend.framealpha": 0.85,
 }
 
-
 def apply_standard_theme() -> None:
-    """Apply the project-wide matplotlib theme."""
     plt.rcParams.update(_THEME_DEFAULTS)
     sns.set_theme(style="whitegrid", font_scale=1.05)
 
-
 def apply_color_palette(palette_name: str = "viridis") -> list:
-    """Set seaborn / matplotlib colour palette and return the colour list."""
     sns.set_palette(palette_name)
     return sns.color_palette(palette_name)
 
-
 def format_axis_labels(ax: matplotlib.axes.Axes, xlabel: str = "", ylabel: str = "", title: str = "") -> None:
-    """Apply formatted labels to a matplotlib Axes object."""
     if xlabel:
         ax.set_xlabel(xlabel, fontsize=11, labelpad=8)
     if ylabel:
@@ -192,48 +166,25 @@ def format_axis_labels(ax: matplotlib.axes.Axes, xlabel: str = "", ylabel: str =
         ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
     ax.tick_params(axis="both", labelsize=9)
 
-
 def apply_grid_style(ax: matplotlib.axes.Axes) -> None:
-    """Apply consistent grid styling."""
     ax.grid(True, linestyle="--", linewidth=0.6, color="#E5E5E5", alpha=0.9)
     ax.set_axisbelow(True)
 
-
-def annotate_significant_points(
-    ax: matplotlib.axes.Axes,
-    x_vals: list,
-    y_vals: list,
-    labels: list,
-    color: str = "crimson",
-) -> None:
-    """Annotate specific data points on a matplotlib Axes."""
+def annotate_significant_points(ax, x_vals, y_vals, labels, color="crimson") -> None:
     for xv, yv, lbl in zip(x_vals, y_vals, labels):
-        ax.annotate(
-            lbl,
-            xy=(xv, yv),
-            xytext=(5, 5),
-            textcoords="offset points",
-            fontsize=8,
-            color=color,
-            arrowprops=dict(arrowstyle="->", color=color, lw=0.8),
-        )
-
+        ax.annotate(lbl, xy=(xv, yv), xytext=(5, 5), textcoords="offset points",
+                    fontsize=8, color=color, arrowprops=dict(arrowstyle="->", color=color, lw=0.8))
 
 def _save(fig: Any, save_path: Optional[str], dpi: int = 150) -> None:
-    """Save a matplotlib or plotly figure if *save_path* is provided."""
     if save_path is None:
         return
-    
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    
     if isinstance(fig, plt.Figure):
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         logger.info("Saved matplotlib figure → %s", save_path)
-    
     elif hasattr(fig, "write_image"):
         fig.write_html(save_path)
         logger.info("Saved plotly figure → %s", save_path)
-    
     elif hasattr(fig, "save"):
         fig.save(save_path)
         logger.info("Saved altair chart → %s", save_path)
@@ -245,69 +196,44 @@ def _save(fig: Any, save_path: Optional[str], dpi: int = 150) -> None:
 
 @tool
 def create_histogram(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     column: str,
     bins: int = 30,
     kde: bool = True,
     title: Optional[str] = None,
     color: str = "#4C72B0",
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    Histogram with optional KDE overlay for a numeric column.
-
-    Parameters
-    ----------
-    column : numeric column to plot
-    bins : number of histogram bins
-    kde : overlay kernel density estimate
-    title : chart title (auto-generated if None)
-    color : bar fill colour
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Histogram with optional KDE overlay for a numeric column."""
+    save_path = f"visualizations/{title or f'histogram_{column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [column])
     apply_standard_theme()
     series = df[column].dropna()
-
     fig, ax = plt.subplots(figsize=(9, 5))
     sns.histplot(series, bins=bins, kde=kde, color=color, ax=ax, edgecolor="white", linewidth=0.4)
     format_axis_labels(ax, xlabel=column, ylabel="Frequency", title=title or f"Distribution of {column}")
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_histogram completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_kde_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     column: str,
     group_by: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    Kernel density estimate plot, optionally grouped by a categorical column.
-
-    Parameters
-    ----------
-    column : numeric column
-    group_by : optional categorical column for multi-group KDE
-    title : chart title
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Kernel density estimate plot, optionally grouped by a categorical column."""
+    save_path = f"visualizations/{title or f'kde_{column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [column] + ([group_by] if group_by else []))
     apply_standard_theme()
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -321,21 +247,24 @@ def create_kde_plot(
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_kde_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_box_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     column: str,
     title: Optional[str] = None,
     color: str = "#55A868",
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Box plot for a single numeric column."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'boxplot_{column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [column])
     apply_standard_theme()
     fig, ax = plt.subplots(figsize=(6, 6))
@@ -344,21 +273,24 @@ def create_box_plot(
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_box_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_violin_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     column: str,
     title: Optional[str] = None,
     color: str = "#C44E52",
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Violin plot for a single numeric column."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'violin_{column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [column])
     apply_standard_theme()
     fig, ax = plt.subplots(figsize=(6, 6))
@@ -367,22 +299,25 @@ def create_violin_plot(
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_violin_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_frequency_bar_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     column: str,
     top_n: int = 20,
     title: Optional[str] = None,
     color: str = "#4C72B0",
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Horizontal bar chart of value counts for a categorical column."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'freq_bar_{column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [column])
     apply_standard_theme()
     counts = df[column].value_counts().head(top_n)
@@ -392,21 +327,24 @@ def create_frequency_bar_chart(
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_frequency_bar_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_pie_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     column: str,
     top_n: int = 8,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Pie chart for proportional breakdown of a categorical column."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'pie_{column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [column])
     apply_standard_theme()
     counts = df[column].value_counts().head(top_n)
@@ -414,18 +352,19 @@ def create_pie_chart(
         counts["Other"] = df[column].value_counts().iloc[top_n:].sum()
     fig, ax = plt.subplots(figsize=(8, 8))
     wedges, texts, autotexts = ax.pie(
-        counts.values,
-        labels=counts.index,
-        autopct="%1.1f%%",
-        startangle=140,
-        colors=sns.color_palette("tab10", len(counts)),
+        counts.values, labels=counts.index, autopct="%1.1f%%",
+        startangle=140, colors=sns.color_palette("tab10", len(counts)),
     )
     for t in autotexts:
         t.set_fontsize(8)
     ax.set_title(title or f"Proportion – {column}", fontsize=14, fontweight="bold")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_pie_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -434,115 +373,101 @@ def create_pie_chart(
 
 @tool
 def create_scatter_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     color_column: Optional[str] = None,
     size_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
-    """
-    Interactive Plotly scatter plot for two numeric columns.
-
-    Parameters
-    ----------
-    x_column : x-axis numeric column
-    y_column : y-axis numeric column
-    color_column : optional column to encode colour
-    size_column : optional numeric column to encode point size
-    title : chart title
-    save_path : optional HTML/PNG export path
-
-    Returns
-    -------
-    plotly Figure
-    """
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Interactive Plotly scatter plot for two numeric columns."""
+    save_path = f"visualizations/{title or f'scatter_{x_column}_{y_column}'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     cols = [x_column, y_column] + [c for c in (color_column, size_column) if c]
     validate_columns_exist(df, cols)
-    fig = px.scatter(
-        df,
-        x=x_column,
-        y=y_column,
-        color=color_column,
-        size=size_column,
-        title=title or f"{y_column} vs {x_column}",
-        template="plotly_white",
-        opacity=0.75,
-        hover_data=df.columns.tolist(),
-    )
-    fig.update_layout(title_font_size=16, font_size=12)
+    fig = px.scatter(df, x=x_column, y=y_column, color=color_column, size=size_column,
+                     title=title or f"{y_column} vs {x_column}", template="plotly_white",
+                     opacity=0.75, hover_data=df.columns.tolist())
+    fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_scatter_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_regression_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Scatter with OLS regression line and 95% CI band."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'regression_{x_column}_{y_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column])
     apply_standard_theme()
     fig, ax = plt.subplots(figsize=(9, 6))
-    sns.regplot(data=df, x=x_column, y=y_column, ax=ax, scatter_kws={"alpha": 0.5, "s": 25}, line_kws={"color": "crimson"})
+    sns.regplot(data=df, x=x_column, y=y_column, ax=ax,
+                scatter_kws={"alpha": 0.5, "s": 25}, line_kws={"color": "crimson"})
     slope, intercept, r, p, _ = stats.linregress(df[x_column].dropna(), df[y_column].dropna())
     ax.annotate(f"r={r:.3f}  p={p:.3e}", xy=(0.05, 0.93), xycoords="axes fraction", fontsize=9, color="crimson")
     format_axis_labels(ax, xlabel=x_column, ylabel=y_column, title=title or f"Regression: {y_column} ~ {x_column}")
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_regression_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_grouped_bar_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     group_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Grouped bar chart comparing a numeric metric across categories."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'grouped_bar_{x_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column, group_column])
     apply_standard_theme()
     pivot = df.groupby([x_column, group_column])[y_column].mean().unstack()
     ax = pivot.plot(kind="bar", figsize=(11, 6), edgecolor="white", width=0.75)
-    format_axis_labels(ax, xlabel=x_column, ylabel=f"Mean {y_column}", title=title or f"{y_column} by {x_column} & {group_column}")
+    format_axis_labels(ax, xlabel=x_column, ylabel=f"Mean {y_column}",
+                       title=title or f"{y_column} by {x_column} & {group_column}")
     ax.legend(title=group_column, bbox_to_anchor=(1.02, 1), loc="upper left")
     apply_grid_style(ax)
     plt.xticks(rotation=30, ha="right")
     fig = ax.get_figure()
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_grouped_bar_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_box_plot_by_category(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Box plot of a numeric column grouped by a categorical column."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'boxplot_{y_column}_by_{x_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column])
     apply_standard_theme()
     order = df.groupby(x_column)[y_column].median().sort_values(ascending=False).index.tolist()
@@ -553,21 +478,24 @@ def create_box_plot_by_category(
     plt.xticks(rotation=30, ha="right")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_box_plot_by_category completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_violin_plot_by_category(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Violin plot of a numeric column grouped by a categorical column."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'violin_{y_column}_by_{x_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column])
     apply_standard_theme()
     order = df.groupby(x_column)[y_column].median().sort_values(ascending=False).index.tolist()
@@ -578,21 +506,24 @@ def create_violin_plot_by_category(
     plt.xticks(rotation=30, ha="right")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_violin_plot_by_category completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_categorical_comparison_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     col1: str,
     col2: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Heatmap of co-occurrence counts for two categorical columns."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'cat_comparison_{col1}_{col2}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [col1, col2])
     apply_standard_theme()
     ct = pd.crosstab(df[col1], df[col2])
@@ -601,7 +532,11 @@ def create_categorical_comparison_chart(
     format_axis_labels(ax, xlabel=col2, ylabel=col1, title=title or f"Co-occurrence: {col1} × {col2}")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_categorical_comparison_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -610,29 +545,15 @@ def create_categorical_comparison_chart(
 
 @tool
 def create_pair_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     hue: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> sns.PairGrid:
-    """
-    Seaborn pairplot for multivariate numeric relationships.
-
-    Parameters
-    ----------
-    columns : numeric columns to include (defaults to all numeric)
-    hue : optional categorical column for colour encoding
-    title : suptitle
-    save_path : optional file path
-
-    Returns
-    -------
-    seaborn PairGrid
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Seaborn pairplot for multivariate numeric relationships."""
+    save_path = f"visualizations/{title or 'pair_plot'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     apply_standard_theme()
     if columns is None:
         columns = get_numeric_columns(df)
@@ -642,34 +563,24 @@ def create_pair_plot(
         g.figure.suptitle(title, y=1.01, fontsize=14, fontweight="bold")
     g.figure.tight_layout()
     _save(g.figure, save_path)
-    return g
+    plt.close(g.figure)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_pair_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_correlation_heatmap(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     method: str = "pearson",
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    Annotated correlation matrix heatmap.
-
-    Parameters
-    ----------
-    columns : numeric columns (defaults to all)
-    method : 'pearson' | 'spearman' | 'kendall'
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Annotated correlation matrix heatmap."""
+    save_path = f"visualizations/{title or f'corr_heatmap_{method}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     apply_standard_theme()
     if columns is None:
         columns = get_numeric_columns(df)
@@ -677,57 +588,57 @@ def create_correlation_heatmap(
     corr = df[columns].corr(method=method)
     mask = np.triu(np.ones_like(corr, dtype=bool))
     fig, ax = plt.subplots(figsize=(max(8, len(columns) * 0.9), max(7, len(columns) * 0.8)))
-    sns.heatmap(
-        corr, mask=mask, annot=True, fmt=".2f", cmap="coolwarm", center=0,
-        square=True, ax=ax, linewidths=0.5, linecolor="white",
-        annot_kws={"size": 8}, vmin=-1, vmax=1,
-    )
+    sns.heatmap(corr, mask=mask, annot=True, fmt=".2f", cmap="coolwarm", center=0,
+                square=True, ax=ax, linewidths=0.5, linecolor="white",
+                annot_kws={"size": 8}, vmin=-1, vmax=1)
     format_axis_labels(ax, title=title or f"Correlation Matrix ({method.capitalize()})")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_correlation_heatmap completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_bubble_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     size_column: str,
     color_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Interactive Plotly bubble chart."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'bubble_{x_column}_{y_column}'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     cols = [x_column, y_column, size_column] + ([color_column] if color_column else [])
     validate_columns_exist(df, cols)
-    fig = px.scatter(
-        df, x=x_column, y=y_column,
-        size=size_column, color=color_column,
-        title=title or f"Bubble Chart: {x_column} vs {y_column}",
-        template="plotly_white", hover_data=df.columns.tolist(), opacity=0.7,
-    )
+    fig = px.scatter(df, x=x_column, y=y_column, size=size_column, color=color_column,
+                     title=title or f"Bubble Chart: {x_column} vs {y_column}",
+                     template="plotly_white", hover_data=df.columns.tolist(), opacity=0.7)
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_bubble_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_grouped_scatter_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     group_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Matplotlib scatter plot with colour-coded groups."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'grouped_scatter_{x_column}_{y_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column, group_column])
     apply_standard_theme()
     groups = df[group_column].unique()
@@ -737,33 +648,38 @@ def create_grouped_scatter_plot(
         sub = df[df[group_column] == grp]
         ax.scatter(sub[x_column], sub[y_column], label=str(grp), color=col, alpha=0.6, s=25)
     ax.legend(title=group_column, bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
-    format_axis_labels(ax, xlabel=x_column, ylabel=y_column, title=title or f"{y_column} vs {x_column} by {group_column}")
+    format_axis_labels(ax, xlabel=x_column, ylabel=y_column,
+                       title=title or f"{y_column} vs {x_column} by {group_column}")
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_grouped_scatter_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_stacked_bar_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     stack_column: str,
     normalize: bool = False,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Stacked (or 100%-normalised) bar chart."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'stacked_bar_{x_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column, stack_column])
     apply_standard_theme()
     pivot = df.groupby([x_column, stack_column])[y_column].sum().unstack(fill_value=0)
     if normalize:
         pivot = pivot.div(pivot.sum(axis=1), axis=0)
-    ax = pivot.plot(kind="bar", stacked=True, figsize=(11, 6), colormap="tab20", edgecolor="white", width=0.75)
+    ax = pivot.plot(kind="bar", stacked=True, figsize=(11, 6), colormap="tab20",
+                    edgecolor="white", width=0.75)
     ylabel = "Proportion" if normalize else f"Total {y_column}"
     format_axis_labels(ax, xlabel=x_column, ylabel=ylabel, title=title or f"Stacked Bar – {y_column}")
     ax.legend(title=stack_column, bbox_to_anchor=(1.02, 1), loc="upper left")
@@ -772,47 +688,51 @@ def create_stacked_bar_chart(
     fig = ax.get_figure()
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_stacked_bar_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_cluster_heatmap(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Hierarchically-clustered heatmap using seaborn clustermap."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'cluster_heatmap'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     apply_standard_theme()
     if columns is None:
         columns = get_numeric_columns(df)
     validate_columns_exist(df, columns)
     data = df[columns].dropna()
-    g = sns.clustermap(
-        data.T, cmap="RdBu_r", center=0, standard_scale=1,
-        figsize=(max(10, len(data.columns) * 0.15), max(7, len(columns) * 0.5)),
-        linewidths=0.01, yticklabels=True,
-    )
+    g = sns.clustermap(data.T, cmap="RdBu_r", center=0, standard_scale=1,
+                       figsize=(max(10, len(data.columns) * 0.15), max(7, len(columns) * 0.5)),
+                       linewidths=0.01, yticklabels=True)
     g.fig.suptitle(title or "Cluster Heatmap", fontsize=14, fontweight="bold", y=1.01)
     _save(g.fig, save_path)
-    return g.fig
+    plt.close(g.fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_cluster_heatmap completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_parallel_coordinates_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     color_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Interactive parallel coordinates plot via Plotly."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'parallel_coords'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     if columns is None:
         columns = get_numeric_columns(df)
     validate_columns_exist(df, columns + ([color_column] if color_column else []))
@@ -824,26 +744,26 @@ def create_parallel_coordinates_plot(
         color_vals = np.zeros(len(df))
         colorscale = "Blues"
     fig = go.Figure(data=go.Parcoords(
-        line=dict(color=color_vals, colorscale=colorscale, showscale=True),
-        dimensions=dims,
-    ))
+        line=dict(color=color_vals, colorscale=colorscale, showscale=True), dimensions=dims))
     fig.update_layout(title=title or "Parallel Coordinates", template="plotly_white", title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_parallel_coordinates_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_radar_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     category_column: str,
     value_columns: list[str],
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Spider/radar chart comparing multiple metrics across categories."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'radar_{category_column}'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [category_column] + value_columns)
     agg = df.groupby(category_column)[value_columns].mean()
     fig = go.Figure()
@@ -851,13 +771,13 @@ def create_radar_chart(
         vals = list(row.values) + [row.values[0]]
         cats = value_columns + [value_columns[0]]
         fig.add_trace(go.Scatterpolar(r=vals, theta=cats, fill="toself", name=str(cat)))
-    fig.update_layout(
-        title=title or f"Radar Chart – {category_column}",
-        template="plotly_white", title_font_size=16,
-        polar=dict(radialaxis=dict(visible=True)),
-    )
+    fig.update_layout(title=title or f"Radar Chart – {category_column}", template="plotly_white",
+                      title_font_size=16, polar=dict(radialaxis=dict(visible=True)))
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_radar_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -866,31 +786,16 @@ def create_radar_chart(
 
 @tool
 def create_time_series_line_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     date_column: str,
     value_column: str,
     group_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    Line chart of a numeric metric over time.
-
-    Parameters
-    ----------
-    date_column : datetime column
-    value_column : numeric column to plot
-    group_column : optional categorical column for multi-line chart
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Line chart of a numeric metric over time."""
+    save_path = f"visualizations/{title or f'ts_line_{value_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [date_column, value_column])
     apply_standard_theme()
     dfc = df.copy()
@@ -904,27 +809,31 @@ def create_time_series_line_chart(
         ax.legend(title=group_column, bbox_to_anchor=(1.02, 1), loc="upper left")
     else:
         ax.plot(dfc[date_column], dfc[value_column], color="#4C72B0", linewidth=1.5)
-    format_axis_labels(ax, xlabel=date_column, ylabel=value_column, title=title or f"{value_column} Over Time")
+    format_axis_labels(ax, xlabel=date_column, ylabel=value_column,
+                       title=title or f"{value_column} Over Time")
     apply_grid_style(ax)
     fig.autofmt_xdate()
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_time_series_line_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_moving_average_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     date_column: str,
     value_column: str,
     windows: list[int] = (7, 30),
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Time series with configurable moving-average overlays."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'moving_avg_{value_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [date_column, value_column])
     apply_standard_theme()
     dfc = df.copy()
@@ -932,33 +841,36 @@ def create_moving_average_chart(
     dfc = dfc.sort_values(date_column)
     fig, ax = plt.subplots(figsize=(13, 5))
     ax.plot(dfc[date_column], dfc[value_column], color="steelblue", alpha=0.4, linewidth=1, label="Raw")
-    palette = ["crimson", "darkorange", "green", "purple"]
-    for w, c in zip(windows, palette):
+    for w, c in zip(windows, ["crimson", "darkorange", "green", "purple"]):
         ma = dfc[value_column].rolling(w).mean()
         ax.plot(dfc[date_column], ma, color=c, linewidth=1.8, label=f"MA-{w}")
     ax.legend()
-    format_axis_labels(ax, xlabel=date_column, ylabel=value_column, title=title or f"{value_column} – Moving Averages")
+    format_axis_labels(ax, xlabel=date_column, ylabel=value_column,
+                       title=title or f"{value_column} – Moving Averages")
     apply_grid_style(ax)
     fig.autofmt_xdate()
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_moving_average_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_seasonal_decomposition_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     date_column: str,
     value_column: str,
     period: int = 12,
     model: str = "additive",
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Seasonal decomposition (trend + seasonal + residual) chart."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'seasonal_decomp_{value_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [date_column, value_column])
     apply_standard_theme()
     dfc = df[[date_column, value_column]].copy()
@@ -975,29 +887,31 @@ def create_seasonal_decomposition_plot(
     axes[0].set_title(title or f"Seasonal Decomposition – {value_column}", fontsize=14, fontweight="bold")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_seasonal_decomposition_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_time_series_comparison_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     date_column: str,
     value_columns: list[str],
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Multi-line chart comparing several time series on the same axes."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'ts_comparison'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [date_column] + value_columns)
     apply_standard_theme()
     dfc = df.copy()
     dfc[date_column] = pd.to_datetime(dfc[date_column])
     dfc = dfc.sort_values(date_column)
     fig, ax = plt.subplots(figsize=(13, 5))
-    palette = sns.color_palette("tab10", len(value_columns))
-    for col, clr in zip(value_columns, palette):
+    for col, clr in zip(value_columns, sns.color_palette("tab10", len(value_columns))):
         ax.plot(dfc[date_column], dfc[col], label=col, color=clr, linewidth=1.5)
     ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left")
     format_axis_labels(ax, xlabel=date_column, ylabel="Value", title=title or "Time Series Comparison")
@@ -1005,21 +919,24 @@ def create_time_series_comparison_chart(
     fig.autofmt_xdate()
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_time_series_comparison_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_time_series_area_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     date_column: str,
     value_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Area chart for a single time series."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'ts_area_{value_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [date_column, value_column])
     apply_standard_theme()
     dfc = df.copy()
@@ -1028,12 +945,17 @@ def create_time_series_area_chart(
     fig, ax = plt.subplots(figsize=(13, 5))
     ax.fill_between(dfc[date_column], dfc[value_column], alpha=0.4, color="steelblue")
     ax.plot(dfc[date_column], dfc[value_column], color="steelblue", linewidth=1.5)
-    format_axis_labels(ax, xlabel=date_column, ylabel=value_column, title=title or f"{value_column} – Area Chart")
+    format_axis_labels(ax, xlabel=date_column, ylabel=value_column,
+                       title=title or f"{value_column} – Area Chart")
     apply_grid_style(ax)
     fig.autofmt_xdate()
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_time_series_area_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1042,32 +964,46 @@ def create_time_series_area_chart(
 
 @tool
 def create_correlation_matrix_heatmap(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     method: str = "pearson",
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """Full (non-triangular) correlation matrix with significance markers."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
-    # Delegates to the existing function for DRY compliance.
-    return create_correlation_heatmap(df, columns=columns, method=method, title=title, save_path=save_path)
+) -> Command:
+    """Full correlation matrix with significance markers — delegates to create_correlation_heatmap."""
+    save_path = f"visualizations/{title or f'corr_matrix_{method}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
+    apply_standard_theme()
+    if columns is None:
+        columns = get_numeric_columns(df)
+    validate_columns_exist(df, columns)
+    corr = df[columns].corr(method=method)
+    mask = np.triu(np.ones_like(corr, dtype=bool))
+    fig, ax = plt.subplots(figsize=(max(8, len(columns) * 0.9), max(7, len(columns) * 0.8)))
+    sns.heatmap(corr, mask=mask, annot=True, fmt=".2f", cmap="coolwarm", center=0,
+                square=True, ax=ax, linewidths=0.5, linecolor="white",
+                annot_kws={"size": 8}, vmin=-1, vmax=1)
+    format_axis_labels(ax, title=title or f"Correlation Matrix ({method.capitalize()})")
+    fig.tight_layout()
+    _save(fig, save_path)
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_correlation_matrix_heatmap completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_regression_analysis_visualization(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_columns: list[str],
     y_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """OLS coefficient plot with 95% CIs from statsmodels."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'ols_coef_{y_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, x_columns + [y_column])
     apply_standard_theme()
     dfc = df[x_columns + [y_column]].dropna()
@@ -1077,33 +1013,37 @@ def create_regression_analysis_visualization(
     cis = model.conf_int().drop("const")
     fig, ax = plt.subplots(figsize=(8, max(4, len(params) * 0.55)))
     y_pos = range(len(params))
-    ax.barh(y_pos, params.values, xerr=[params.values - cis[0].values, cis[1].values - params.values],
+    ax.barh(y_pos, params.values,
+            xerr=[params.values - cis[0].values, cis[1].values - params.values],
             color=["#C44E52" if p < 0 else "#4C72B0" for p in params.values],
             align="center", alpha=0.8, capsize=4)
     ax.set_yticks(list(y_pos))
     ax.set_yticklabels(params.index, fontsize=9)
     ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
     format_axis_labels(ax, xlabel="Coefficient", title=title or f"OLS Coefficients – {y_column}")
-    ax.annotate(f"R² = {model.rsquared:.3f}  adj-R² = {model.rsquared_adj:.3f}", xy=(0.98, 0.02),
-                xycoords="axes fraction", ha="right", fontsize=9)
+    ax.annotate(f"R² = {model.rsquared:.3f}  adj-R² = {model.rsquared_adj:.3f}",
+                xy=(0.98, 0.02), xycoords="axes fraction", ha="right", fontsize=9)
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_regression_analysis_visualization completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_residual_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Residual vs fitted values plot for a simple OLS model."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'residuals_{y_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column])
     apply_standard_theme()
     sub = df[[x_column, y_column]].dropna()
@@ -1122,49 +1062,55 @@ def create_residual_plot(
     fig.suptitle(title or f"Residual Diagnostics – {y_column} ~ {x_column}", fontsize=14, fontweight="bold")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_residual_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_distribution_comparison_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     column: str,
     group_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Overlapping KDE distributions for each group."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'dist_comparison_{column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [column, group_column])
     apply_standard_theme()
     groups = df[group_column].unique()
-    palette = sns.color_palette("tab10", len(groups))
     fig, ax = plt.subplots(figsize=(10, 5))
-    for grp, clr in zip(groups, palette):
+    for grp, clr in zip(groups, sns.color_palette("tab10", len(groups))):
         sub = df[df[group_column] == grp][column].dropna()
         sns.kdeplot(sub, ax=ax, label=str(grp), color=clr, fill=True, alpha=0.2)
     ax.legend(title=group_column)
-    format_axis_labels(ax, xlabel=column, ylabel="Density", title=title or f"Distribution of {column} by {group_column}")
+    format_axis_labels(ax, xlabel=column, ylabel="Density",
+                       title=title or f"Distribution of {column} by {group_column}")
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_distribution_comparison_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_statistical_significance_visualization(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     column: str,
     group_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Bar chart of group means with SEM error bars and ANOVA p-value annotation."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'anova_{column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [column, group_column])
     apply_standard_theme()
     grouped = df.groupby(group_column)[column]
@@ -1173,16 +1119,21 @@ def create_statistical_significance_visualization(
     groups = [df[df[group_column] == g][column].dropna().values for g in means.index]
     f_stat, p_val = stats.f_oneway(*groups)
     fig, ax = plt.subplots(figsize=(max(7, len(means) * 0.9), 6))
-    bars = ax.bar(means.index, means.values, yerr=sems.values, capsize=4,
-                  color=sns.color_palette("tab10", len(means)), edgecolor="white", alpha=0.85)
+    ax.bar(means.index, means.values, yerr=sems.values, capsize=4,
+           color=sns.color_palette("tab10", len(means)), edgecolor="white", alpha=0.85)
     ax.annotate(f"ANOVA: F={f_stat:.2f}, p={p_val:.4f}", xy=(0.5, 0.97), xycoords="axes fraction",
                 ha="center", fontsize=10, color="crimson" if p_val < 0.05 else "gray")
-    format_axis_labels(ax, xlabel=group_column, ylabel=f"Mean {column}", title=title or f"Group Means – {column}")
+    format_axis_labels(ax, xlabel=group_column, ylabel=f"Mean {column}",
+                       title=title or f"Group Means – {column}")
     apply_grid_style(ax)
     plt.xticks(rotation=30, ha="right")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_statistical_significance_visualization completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1191,165 +1142,134 @@ def create_statistical_significance_visualization(
 
 @tool
 def create_choropleth_map(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     location_column: str,
     value_column: str,
     location_mode: str = "country names",
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
-    """
-    Choropleth world map via Plotly.
-
-    Parameters
-    ----------
-    location_column : column with country/ISO names or codes
-    value_column : numeric column to encode colour
-    location_mode : 'country names' | 'ISO-3' | 'USA-states'
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    plotly Figure
-    """
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Choropleth world map via Plotly."""
+    save_path = f"visualizations/{title or f'choropleth_{value_column}'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [location_column, value_column])
-    fig = px.choropleth(
-        df, locations=location_column, color=value_column,
-        locationmode=location_mode, color_continuous_scale="Viridis",
-        title=title or f"Choropleth – {value_column}",
-        template="plotly_white",
-    )
+    fig = px.choropleth(df, locations=location_column, color=value_column,
+                        locationmode=location_mode, color_continuous_scale="Viridis",
+                        title=title or f"Choropleth – {value_column}", template="plotly_white")
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_choropleth_map completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_geospatial_scatter_map(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     lat_column: str,
     lon_column: str,
     value_column: Optional[str] = None,
     hover_columns: Optional[list[str]] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Scatter map using lat/lon coordinates."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'geo_scatter'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     cols = [lat_column, lon_column] + ([value_column] if value_column else [])
     validate_columns_exist(df, cols)
-    fig = px.scatter_geo(
-        df, lat=lat_column, lon=lon_column, color=value_column,
-        hover_data=hover_columns or df.columns.tolist(),
-        title=title or "Geospatial Scatter Map",
-        template="plotly_white", color_continuous_scale="Plasma",
-    )
+    fig = px.scatter_geo(df, lat=lat_column, lon=lon_column, color=value_column,
+                         hover_data=hover_columns or df.columns.tolist(),
+                         title=title or "Geospatial Scatter Map",
+                         template="plotly_white", color_continuous_scale="Plasma")
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_geospatial_scatter_map completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_location_density_heatmap(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     lat_column: str,
     lon_column: str,
     value_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Density heatmap on a map using Plotly."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'location_density'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [lat_column, lon_column])
-    fig = px.density_mapbox(
-        df, lat=lat_column, lon=lon_column, z=value_column,
-        radius=10, center=dict(lat=df[lat_column].mean(), lon=df[lon_column].mean()),
-        zoom=3, mapbox_style="open-street-map",
-        title=title or "Location Density Heatmap",
-        color_continuous_scale="Hot",
-    )
+    fig = px.density_mapbox(df, lat=lat_column, lon=lon_column, z=value_column, radius=10,
+                             center=dict(lat=df[lat_column].mean(), lon=df[lon_column].mean()),
+                             zoom=3, mapbox_style="open-street-map",
+                             title=title or "Location Density Heatmap",
+                             color_continuous_scale="Hot")
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_location_density_heatmap completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_regional_comparison_map(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     location_column: str,
     value_column: str,
     scope: str = "world",
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Choropleth scoped to a specific region (e.g., 'usa', 'europe')."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'regional_map_{value_column}'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [location_column, value_column])
-    fig = px.choropleth(
-        df, locations=location_column, color=value_column,
-        locationmode="country names", scope=scope,
-        color_continuous_scale="RdYlGn",
-        title=title or f"Regional Comparison – {value_column}",
-        template="plotly_white",
-    )
+    fig = px.choropleth(df, locations=location_column, color=value_column,
+                        locationmode="country names", scope=scope,
+                        color_continuous_scale="RdYlGn",
+                        title=title or f"Regional Comparison – {value_column}",
+                        template="plotly_white")
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_regional_comparison_map completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY 7: NETWORK GRAPH VISUALIZATIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_nx_graph(edges_df: pd.DataFrame, source_col: str, target_col: str, weight_col: Optional[str]) -> nx.Graph:
-    G = nx.from_pandas_edgelist(edges_df, source=source_col, target=target_col,
-                                 edge_attr=weight_col, create_using=nx.Graph())
-    return G
+def _build_nx_graph(edges_df, source_col, target_col, weight_col):
+    return nx.from_pandas_edgelist(edges_df, source=source_col, target=target_col,
+                                   edge_attr=weight_col, create_using=nx.Graph())
 
 
 @tool
 def create_node_link_graph(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     source_column: str,
     target_column: str,
     weight_column: Optional[str] = None,
     layout: str = "spring",
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    NetworkX node-link graph.
-
-    Parameters
-    ----------
-    source_column : source node column
-    target_column : target node column
-    weight_column : optional edge weight column
-    layout : 'spring' | 'circular' | 'kamada_kawai'
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """NetworkX node-link graph."""
+    save_path = f"visualizations/{title or 'node_link_graph'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [source_column, target_column])
     apply_standard_theme()
     G = _build_nx_graph(df, source_column, target_column, weight_column)
-    layouts = {"spring": nx.spring_layout, "circular": nx.circular_layout, "kamada_kawai": nx.kamada_kawai_layout}
+    layouts = {"spring": nx.spring_layout, "circular": nx.circular_layout,
+               "kamada_kawai": nx.kamada_kawai_layout}
     pos = layouts.get(layout, nx.spring_layout)(G, seed=42)
     degree = dict(G.degree())
     node_sizes = [300 + degree[n] * 80 for n in G.nodes()]
@@ -1360,35 +1280,36 @@ def create_node_link_graph(
     ax.axis("off")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_node_link_graph completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_dependency_graph(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     source_column: str,
     target_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Interactive directed dependency graph via Plotly."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'dependency_graph'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [source_column, target_column])
-    G = nx.from_pandas_edgelist(df, source=source_column, target=target_column,
-                                 create_using=nx.DiGraph())
+    G = nx.from_pandas_edgelist(df, source=source_column, target=target_column, create_using=nx.DiGraph())
     pos = nx.spring_layout(G, seed=42)
     edge_x, edge_y = [], []
     for u, v in G.edges():
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
-        edge_x += [x0, x1, None]
-        edge_y += [y0, y1, None]
+        x0, y0 = pos[u]; x1, y1 = pos[v]
+        edge_x += [x0, x1, None]; edge_y += [y0, y1, None]
     node_x = [pos[n][0] for n in G.nodes()]
     node_y = [pos[n][1] for n in G.nodes()]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode="lines", line=dict(width=0.8, color="#888"), hoverinfo="none"))
+    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode="lines",
+                              line=dict(width=0.8, color="#888"), hoverinfo="none"))
     fig.add_trace(go.Scatter(x=node_x, y=node_y, mode="markers+text",
                               text=list(G.nodes()), textposition="top center",
                               marker=dict(size=10, color="steelblue", line_width=1)))
@@ -1397,22 +1318,24 @@ def create_dependency_graph(
                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_dependency_graph completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_relationship_network_graph(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     source_column: str,
     target_column: str,
     weight_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Weighted relationship network with edge thickness encoding."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'relationship_network'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [source_column, target_column])
     G = _build_nx_graph(df, source_column, target_column, weight_column)
     pos = nx.spring_layout(G, seed=42)
@@ -1420,8 +1343,7 @@ def create_relationship_network_graph(
     max_w = max((d.get(weight_column or "weight", 1) for _, _, d in G.edges(data=True)), default=1)
     for u, v, data in G.edges(data=True):
         w = data.get(weight_column or "weight", 1)
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
+        x0, y0 = pos[u]; x1, y1 = pos[v]
         fig.add_trace(go.Scatter(x=[x0, x1, None], y=[y0, y1, None], mode="lines",
                                   line=dict(width=max(0.5, w / max_w * 5), color="gray"),
                                   hoverinfo="none"))
@@ -1437,54 +1359,41 @@ def create_relationship_network_graph(
                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_relationship_network_graph completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY 8: DIMENSIONALITY REDUCTION VISUALIZATIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _prepare_numeric_matrix(df : pd.DataFrame, columns: Optional[list[str]]) -> tuple[np.ndarray, list[str]]:
+def _prepare_numeric_matrix(df, columns):
     if columns is None:
         columns = get_numeric_columns(df)
     validate_columns_exist(df, columns)
     X = df[columns].dropna().values
-    scaler = StandardScaler()
-    return scaler.fit_transform(X), columns
+    return StandardScaler().fit_transform(X), columns
 
 
 @tool
 def create_pca_visualization(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     n_components: int = 2,
     color_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
-    """
-    Interactive PCA projection scatter plot.
-
-    Parameters
-    ----------
-    columns : numeric features to reduce (defaults to all numeric)
-    n_components : 2 or 3
-    color_column : optional categorical column for colour
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    plotly Figure
-    """
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
-    X_scaled, _ = _prepare_numeric_matrix(df, columns)
+) -> Command:
+    """Interactive PCA projection scatter plot."""
+    save_path = f"visualizations/{title or 'pca'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
+    X_scaled, feat_cols = _prepare_numeric_matrix(df, columns)
     pca = PCA(n_components=min(n_components, X_scaled.shape[1]))
     coords = pca.fit_transform(X_scaled)
     var = pca.explained_variance_ratio_
-    idx = df[get_numeric_columns(df)[0] if not columns else columns[0]].dropna().index
+    idx = df[feat_cols[0]].dropna().index
     plot_df = pd.DataFrame(coords, columns=[f"PC{i+1}" for i in range(coords.shape[1])], index=idx)
     if color_column and color_column in df.columns:
         plot_df[color_column] = df.loc[idx, color_column].values
@@ -1497,22 +1406,24 @@ def create_pca_visualization(
                           template="plotly_white", opacity=0.7)
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_pca_visualization completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_tsne_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     perplexity: float = 30.0,
     color_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """t-SNE 2-D projection scatter plot."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'tsne'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     X_scaled, feat_cols = _prepare_numeric_matrix(df, columns)
     tsne = TSNE(n_components=2, perplexity=min(perplexity, len(X_scaled) - 1), random_state=42, n_iter=1000)
     coords = tsne.fit_transform(X_scaled)
@@ -1524,25 +1435,30 @@ def create_tsne_plot(
                       title=title or "t-SNE Projection", template="plotly_white", opacity=0.7)
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_tsne_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_umap_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     n_neighbors: int = 15,
     min_dist: float = 0.1,
     color_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
-    """UMAP 2-D projection scatter plot (requires the `umap-learn` package)."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """UMAP 2-D projection scatter plot (requires umap-learn)."""
+    save_path = f"visualizations/{title or 'umap'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     if not UMAP_AVAILABLE:
-        raise ImportError("umap-learn is not installed. Run: pip install umap-learn")
+        return Command(update={
+            "tool_priority_list_3": state["tool_priority_list_3"][1:],
+            "messages": [ToolMessage(content="Error: umap-learn not installed.", tool_call_id=tool_call_id)]
+        })
     X_scaled, feat_cols = _prepare_numeric_matrix(df, columns)
     reducer = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist, random_state=42)
     coords = reducer.fit_transform(X_scaled)
@@ -1554,7 +1470,10 @@ def create_umap_plot(
                       title=title or "UMAP Projection", template="plotly_white", opacity=0.7)
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_umap_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1563,72 +1482,62 @@ def create_umap_plot(
 
 @tool
 def create_treemap(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     path_columns: list[str],
     value_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
-    """
-    Plotly treemap for hierarchical category proportions.
-
-    Parameters
-    ----------
-    path_columns : ordered list of categorical columns (hierarchy levels)
-    value_column : numeric column for rectangle size
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    plotly Figure
-    """
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Plotly treemap for hierarchical category proportions."""
+    save_path = f"visualizations/{title or 'treemap'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, path_columns + [value_column])
     fig = px.treemap(df, path=path_columns, values=value_column,
                       title=title or "Treemap", color=value_column,
                       color_continuous_scale="RdBu", template="plotly_white")
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_treemap completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_sunburst_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     path_columns: list[str],
     value_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Plotly sunburst chart for hierarchical proportions."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'sunburst'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, path_columns + [value_column])
     fig = px.sunburst(df, path=path_columns, values=value_column,
                        title=title or "Sunburst Chart", color=value_column,
                        color_continuous_scale="Sunset", template="plotly_white")
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_sunburst_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_dendrogram(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     method: str = "ward",
     orientation: str = "top",
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """Hierarchical clustering dendrogram."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'dendrogram'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     apply_standard_theme()
     if columns is None:
         columns = get_numeric_columns(df)
@@ -1636,12 +1545,17 @@ def create_dendrogram(
     X = df[columns].dropna().values
     Z = linkage(X, method=method)
     fig, ax = plt.subplots(figsize=(13, 6))
-    dendrogram(Z, ax=ax, orientation=orientation, leaf_rotation=90, leaf_font_size=7, color_threshold=0.7 * max(Z[:, 2]))
+    dendrogram(Z, ax=ax, orientation=orientation, leaf_rotation=90, leaf_font_size=7,
+               color_threshold=0.7 * max(Z[:, 2]))
     format_axis_labels(ax, title=title or f"Dendrogram ({method.capitalize()} linkage)")
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_dendrogram completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1650,92 +1564,89 @@ def create_dendrogram(
 
 @tool
 def create_large_dataset_scatter_aggregation(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    2-D hexbin aggregation scatter chart suitable for millions of rows.
-
-    Uses matplotlib hexbin when datashader is unavailable.
-
-    Parameters
-    ----------
-    x_column : x-axis numeric column
-    y_column : y-axis numeric column
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """2-D hexbin aggregation scatter chart suitable for millions of rows."""
+    save_path = f"visualizations/{title or f'hexbin_{x_column}_{y_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column])
     apply_standard_theme()
     sub = df[[x_column, y_column]].dropna()
     fig, ax = plt.subplots(figsize=(10, 7))
     hb = ax.hexbin(sub[x_column], sub[y_column], gridsize=50, cmap="YlOrRd", mincnt=1)
     plt.colorbar(hb, ax=ax, label="Count")
-    format_axis_labels(ax, xlabel=x_column, ylabel=y_column, title=title or f"Aggregated Scatter – {y_column} vs {x_column}")
+    format_axis_labels(ax, xlabel=x_column, ylabel=y_column,
+                       title=title or f"Aggregated Scatter – {y_column} vs {x_column}")
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_large_dataset_scatter_aggregation completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_large_dataset_density_visualization(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """KDE density plot optimised for large datasets using matplotlib."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """KDE density plot optimised for large datasets."""
+    save_path = f"visualizations/{title or f'density_{x_column}_{y_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column])
     apply_standard_theme()
     sub = df[[x_column, y_column]].dropna().sample(min(50_000, len(df)), random_state=42)
     fig, ax = plt.subplots(figsize=(10, 7))
     sns.kdeplot(data=sub, x=x_column, y=y_column, cmap="Blues", fill=True, thresh=0.05, ax=ax)
-    format_axis_labels(ax, xlabel=x_column, ylabel=y_column, title=title or f"Density – {y_column} vs {x_column}")
+    format_axis_labels(ax, xlabel=x_column, ylabel=y_column,
+                       title=title or f"Density – {y_column} vs {x_column}")
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_large_dataset_density_visualization completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_scalable_heatmap(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     bins: int = 50,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
+) -> Command:
     """2-D histogram heatmap for large datasets."""
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'scalable_heatmap_{x_column}_{y_column}'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column])
     apply_standard_theme()
     sub = df[[x_column, y_column]].dropna()
     fig, ax = plt.subplots(figsize=(10, 7))
     h, xedges, yedges, img = ax.hist2d(sub[x_column], sub[y_column], bins=bins, cmap="inferno")
     plt.colorbar(img, ax=ax, label="Count")
-    format_axis_labels(ax, xlabel=x_column, ylabel=y_column, title=title or f"Density Heatmap – {y_column} vs {x_column}")
+    format_axis_labels(ax, xlabel=x_column, ylabel=y_column,
+                       title=title or f"Density Heatmap – {y_column} vs {x_column}")
     apply_grid_style(ax)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_scalable_heatmap completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1744,61 +1655,44 @@ def create_scalable_heatmap(
 
 @tool
 def create_interactive_scatter_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     color_column: Optional[str] = None,
     size_column: Optional[str] = None,
     hover_columns: Optional[list[str]] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
-    """
-    Fully interactive Plotly scatter with hover tooltips and zoom.
-
-    Parameters
-    ----------
-    x_column : x-axis column
-    y_column : y-axis column
-    color_column : optional colour encoding column
-    size_column : optional size encoding column
-    hover_columns : columns shown in tooltip
-    title : chart title
-    save_path : optional HTML export path
-
-    Returns
-    -------
-    plotly Figure
-    """
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Fully interactive Plotly scatter with hover tooltips and zoom."""
+    save_path = f"visualizations/{title or f'interactive_scatter_{x_column}_{y_column}'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     cols = [x_column, y_column] + [c for c in (color_column, size_column) if c]
     validate_columns_exist(df, cols)
-    fig = px.scatter(
-        df, x=x_column, y=y_column, color=color_column, size=size_column,
-        hover_data=hover_columns or df.columns.tolist(),
-        title=title or f"Interactive: {y_column} vs {x_column}",
-        template="plotly_white", opacity=0.75,
-    )
+    fig = px.scatter(df, x=x_column, y=y_column, color=color_column, size=size_column,
+                     hover_data=hover_columns or df.columns.tolist(),
+                     title=title or f"Interactive: {y_column} vs {x_column}",
+                     template="plotly_white", opacity=0.75)
     fig.update_traces(marker=dict(line=dict(width=0.5, color="DarkSlateGrey")))
     fig.update_layout(title_font_size=16, hovermode="closest")
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_interactive_scatter_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_interactive_time_series(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     date_column: str,
     value_columns: Union[str, list[str]],
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Plotly time series with range-slider and range-selector buttons."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or 'interactive_ts'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     if isinstance(value_columns, str):
         value_columns = [value_columns]
     validate_columns_exist(df, [date_column] + value_columns)
@@ -1811,8 +1705,8 @@ def create_interactive_time_series(
         fig.add_trace(go.Scatter(x=dfc[date_column], y=dfc[col], name=col,
                                   line=dict(color=palette[i % len(palette)], width=1.5), mode="lines"))
     fig.update_layout(
-        title=title or "Interactive Time Series",
-        template="plotly_white", title_font_size=16, hovermode="x unified",
+        title=title or "Interactive Time Series", template="plotly_white",
+        title_font_size=16, hovermode="x unified",
         xaxis=dict(
             rangeselector=dict(buttons=[
                 dict(count=7, label="7d", step="day", stepmode="backward"),
@@ -1825,56 +1719,61 @@ def create_interactive_time_series(
         ),
     )
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_interactive_time_series completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_hover_enabled_bar_chart(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     color_column: Optional[str] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Interactive bar chart with hover tooltips."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'hover_bar_{x_column}'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column])
-    fig = px.bar(
-        df, x=x_column, y=y_column, color=color_column,
-        hover_data=df.columns.tolist(),
-        title=title or f"Bar Chart – {y_column} by {x_column}",
-        template="plotly_white", barmode="group",
-    )
+    fig = px.bar(df, x=x_column, y=y_column, color=color_column,
+                 hover_data=df.columns.tolist(),
+                 title=title or f"Bar Chart – {y_column} by {x_column}",
+                 template="plotly_white", barmode="group")
     fig.update_layout(title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_hover_enabled_bar_chart completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_zoomable_heatmap(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     x_column: str,
     y_column: str,
     value_column: str,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> go.Figure:
+) -> Command:
     """Interactive zoomable heatmap via Plotly."""
-    save_path = f"visualizations/{title}.html"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+    save_path = f"visualizations/{title or f'zoomable_heatmap_{value_column}'}.html"
+    df = load_df(state["clean_df_key"])                    # ← updated
     validate_columns_exist(df, [x_column, y_column, value_column])
     pivot = df.pivot_table(index=y_column, columns=x_column, values=value_column, aggfunc="mean")
     fig = go.Figure(data=go.Heatmap(
         z=pivot.values, x=pivot.columns.tolist(), y=pivot.index.tolist(),
-        colorscale="RdBu_r", zmid=0,
-    ))
-    fig.update_layout(title=title or f"Zoomable Heatmap – {value_column}", template="plotly_white", title_font_size=16)
+        colorscale="RdBu_r", zmid=0))
+    fig.update_layout(title=title or f"Zoomable Heatmap – {value_column}",
+                       template="plotly_white", title_font_size=16)
     _save(fig, save_path)
-    # return fig
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_zoomable_heatmap completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1883,25 +1782,13 @@ def create_zoomable_heatmap(
 
 @tool
 def create_missing_value_heatmap(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    Heatmap of missing values across all columns.
-
-    Parameters
-    ----------
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Heatmap of missing values across all columns."""
+    save_path = f"visualizations/{title or 'missing_value_heatmap'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     apply_standard_theme()
     missing_matrix = df.isnull().astype(int)
     fig, ax = plt.subplots(figsize=(max(10, len(df.columns) * 0.7), min(12, max(5, len(df) * 0.02))))
@@ -1911,36 +1798,25 @@ def create_missing_value_heatmap(
     plt.xticks(rotation=45, ha="right", fontsize=8)
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_missing_value_heatmap completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_outlier_detection_plot(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     method: str = "zscore",
     threshold: float = 3.0,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    Box plots with outlier annotations using Z-score or IQR detection.
-
-    Parameters
-    ----------
-    columns : numeric columns to analyse (defaults to all)
-    method : 'zscore' | 'iqr'
-    threshold : Z-score threshold or IQR multiplier
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df= state["clean_df"]
+) -> Command:
+    """Box plots with outlier annotations using Z-score or IQR detection."""
+    save_path = f"visualizations/{title or 'outlier_detection'}.png"
+    df = load_df(state["clean_df_key"])                    # ← updated
     apply_standard_theme()
     if columns is None:
         columns = get_numeric_columns(df)
@@ -1961,57 +1837,53 @@ def create_outlier_detection_plot(
             mask = (series < q1 - threshold * iqr) | (series > q3 + threshold * iqr)
         sns.boxplot(y=series, ax=ax, color="#4C72B0", width=0.4, linewidth=1)
         outliers = series[mask]
-        ax.scatter([0] * len(outliers), outliers, color="crimson", zorder=5, s=20, alpha=0.7, label=f"{mask.sum()} outliers")
+        ax.scatter([0] * len(outliers), outliers, color="crimson", zorder=5, s=20,
+                   alpha=0.7, label=f"{mask.sum()} outliers")
         ax.legend(fontsize=7)
         format_axis_labels(ax, ylabel=col, title=col)
         apply_grid_style(ax)
     for ax in axes[n:]:
         ax.set_visible(False)
-    fig.suptitle(title or f"Outlier Detection ({method.upper()}, threshold={threshold})", fontsize=14, fontweight="bold")
+    fig.suptitle(title or f"Outlier Detection ({method.upper()}, threshold={threshold})",
+                 fontsize=14, fontweight="bold")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_outlier_detection_plot completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 @tool
 def create_distribution_comparison_before_after(
-    state: Annotated[ AgentState, InjectedState],
+    state: Annotated[AgentState, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     columns: Optional[list[str]] = None,
     title: Optional[str] = None,
-    # save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    Side-by-side KDE comparison of distributions before and after cleaning.
-
-    Parameters
-    ----------
-    columns : numeric columns to compare (defaults to shared numeric cols)
-    title : chart title
-    save_path : optional file path
-
-    Returns
-    -------
-    matplotlib Figure
-    """
-    save_path = f"visualizations/{title}.png"
-    remove_first(state["tool_priority_list_3"])
-    df_before= state["df"]
-    df_after = state["clean_df"]
+) -> Command:
+    """Side-by-side KDE comparison of distributions before and after cleaning."""
+    save_path = f"visualizations/{title or 'dist_before_after'}.png"
+    df_before = load_df(state["df_key"])                   # ← updated (raw df)
+    df_after  = load_df(state["clean_df_key"])             # ← updated (cleaned df)
     apply_standard_theme()
     if columns is None:
         num_before = set(get_numeric_columns(df_before))
-        num_after = set(get_numeric_columns(df_after))
+        num_after  = set(get_numeric_columns(df_after))
         columns = list(num_before & num_after)
     n = len(columns)
     if n == 0:
-        raise ValueError("No overlapping numeric columns found.")
+        return Command(update={
+            "tool_priority_list_3": state["tool_priority_list_3"][1:],
+            "messages": [ToolMessage(content="Error: no overlapping numeric columns.", tool_call_id=tool_call_id)]
+        })
     ncols = min(3, n)
     nrows = (n + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.5, nrows * 4))
     axes = np.array(axes).flatten()
     for ax, col in zip(axes, columns):
         sns.kdeplot(df_before[col].dropna(), ax=ax, color="#C44E52", label="Before", fill=True, alpha=0.3)
-        sns.kdeplot(df_after[col].dropna(), ax=ax, color="#4C72B0", label="After", fill=True, alpha=0.3)
+        sns.kdeplot(df_after[col].dropna(),  ax=ax, color="#4C72B0", label="After",  fill=True, alpha=0.3)
         ax.legend(fontsize=7)
         format_axis_labels(ax, xlabel=col, ylabel="Density", title=col)
         apply_grid_style(ax)
@@ -2020,29 +1892,30 @@ def create_distribution_comparison_before_after(
     fig.suptitle(title or "Distribution: Before vs After Cleaning", fontsize=14, fontweight="bold")
     fig.tight_layout()
     _save(fig, save_path)
-    # return fig
+    plt.close(fig)
+    return Command(update={
+        "tool_priority_list_3": state["tool_priority_list_3"][1:],
+        "messages": [ToolMessage(content=f"create_distribution_comparison_before_after completed: {save_path}", tool_call_id=tool_call_id)]
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TOOL REGISTRY  (for AI agent integration)
+# TOOL REGISTRY
 # ─────────────────────────────────────────────────────────────────────────────
 
 TOOL_REGISTRY: dict[str, callable] = {
-    # ── Univariate ──────────────────────────────────────────────────────────
     "create_histogram": create_histogram,
     "create_kde_plot": create_kde_plot,
     "create_box_plot": create_box_plot,
     "create_violin_plot": create_violin_plot,
     "create_frequency_bar_chart": create_frequency_bar_chart,
     "create_pie_chart": create_pie_chart,
-    # ── Bivariate ───────────────────────────────────────────────────────────
     "create_scatter_plot": create_scatter_plot,
     "create_regression_plot": create_regression_plot,
     "create_grouped_bar_chart": create_grouped_bar_chart,
     "create_box_plot_by_category": create_box_plot_by_category,
     "create_violin_plot_by_category": create_violin_plot_by_category,
     "create_categorical_comparison_chart": create_categorical_comparison_chart,
-    # ── Multivariate ────────────────────────────────────────────────────────
     "create_pair_plot": create_pair_plot,
     "create_correlation_heatmap": create_correlation_heatmap,
     "create_bubble_chart": create_bubble_chart,
@@ -2051,71 +1924,37 @@ TOOL_REGISTRY: dict[str, callable] = {
     "create_cluster_heatmap": create_cluster_heatmap,
     "create_parallel_coordinates_plot": create_parallel_coordinates_plot,
     "create_radar_chart": create_radar_chart,
-    # ── Time Series ─────────────────────────────────────────────────────────
     "create_time_series_line_chart": create_time_series_line_chart,
     "create_moving_average_chart": create_moving_average_chart,
     "create_seasonal_decomposition_plot": create_seasonal_decomposition_plot,
     "create_time_series_comparison_chart": create_time_series_comparison_chart,
     "create_time_series_area_chart": create_time_series_area_chart,
-    # ── Statistical ─────────────────────────────────────────────────────────
     "create_correlation_matrix_heatmap": create_correlation_matrix_heatmap,
     "create_regression_analysis_visualization": create_regression_analysis_visualization,
     "create_residual_plot": create_residual_plot,
     "create_distribution_comparison_chart": create_distribution_comparison_chart,
     "create_statistical_significance_visualization": create_statistical_significance_visualization,
-    # ── Geospatial ──────────────────────────────────────────────────────────
     "create_choropleth_map": create_choropleth_map,
     "create_geospatial_scatter_map": create_geospatial_scatter_map,
     "create_location_density_heatmap": create_location_density_heatmap,
     "create_regional_comparison_map": create_regional_comparison_map,
-    # ── Network ─────────────────────────────────────────────────────────────
     "create_node_link_graph": create_node_link_graph,
     "create_dependency_graph": create_dependency_graph,
     "create_relationship_network_graph": create_relationship_network_graph,
-    # ── Dimensionality Reduction ────────────────────────────────────────────
     "create_pca_visualization": create_pca_visualization,
     "create_tsne_plot": create_tsne_plot,
     "create_umap_plot": create_umap_plot,
-    # ── Hierarchical ────────────────────────────────────────────────────────
     "create_treemap": create_treemap,
     "create_sunburst_chart": create_sunburst_chart,
     "create_dendrogram": create_dendrogram,
-    # ── Large Dataset ───────────────────────────────────────────────────────
     "create_large_dataset_scatter_aggregation": create_large_dataset_scatter_aggregation,
     "create_large_dataset_density_visualization": create_large_dataset_density_visualization,
     "create_scalable_heatmap": create_scalable_heatmap,
-    # ── Interactive ─────────────────────────────────────────────────────────
     "create_interactive_scatter_plot": create_interactive_scatter_plot,
     "create_interactive_time_series": create_interactive_time_series,
     "create_hover_enabled_bar_chart": create_hover_enabled_bar_chart,
     "create_zoomable_heatmap": create_zoomable_heatmap,
-    # ── Data Quality ────────────────────────────────────────────────────────
     "create_missing_value_heatmap": create_missing_value_heatmap,
     "create_outlier_detection_plot": create_outlier_detection_plot,
-    "create_distribution_comparison_before_after": create_distribution_comparison_before_after
-
+    "create_distribution_comparison_before_after": create_distribution_comparison_before_after,
 }
-
-
-# @tool
-# def call_tool(tool_name: str, **kwargs) -> Any:
-#     """
-#     Dispatch a visualization tool call by name.
-
-#     Parameters
-#     ----------
-#     tool_name : key in TOOL_REGISTRY
-#     **kwargs : keyword arguments forwarded to the tool function
-
-#     Returns
-#     -------
-#     Whatever the individual tool function returns.
-
-#     Raises
-#     ------
-#     KeyError if *tool_name* is not registered.
-#     """
-#     if tool_name not in TOOL_REGISTRY:
-#         available = ", ".join(sorted(TOOL_REGISTRY))
-#         raise KeyError(f"Unknown tool '{tool_name}'. Available tools:\n{available}")
-#     return TOOL_REGISTRY[tool_name](**kwargs)
